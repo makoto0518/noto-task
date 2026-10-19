@@ -1,0 +1,17 @@
+{
+  "name": "noto-task",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:local": "wrangler d1 execute noto-db --local --file=./schema.sql",
+    "db:remote": "wrangler d1 execute noto-db --remote --file=./schema.sql",
+    "test": "node --test test/*.test.mjs",
+    "check": "node --check public/app.js && node --check public/sync.js && node --check public/quota.js && node --check worker/usage.js && node --check public/theme.js && node --check worker/index.js && node --test test/*.test.mjs"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}
