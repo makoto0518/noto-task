@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#f5f8ff" />
+  <meta name="description" content="メモとタスクをすぐに記録。" />
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+  <!-- Apply selected theme before CSS paints; prevents a light-mode flash. -->
+  <script src="/theme.js"></script>
+  <link rel="stylesheet" href="/style.css" />
+  <title>noto. — メモとタスク</title>
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+  <div class="ambient ambient-one" aria-hidden="true"></div>
+  <div class="ambient ambient-two" aria-hidden="true"></div>
+  <div class="ambient ambient-three" aria-hidden="true"></div>
+
+  <!-- Accessible full-screen loading placeholder; removed once input is ready. -->
+  <div id="skeleton" class="skeleton-screen" aria-label="読み込み中" role="status">
+    <div class="sk-shell">
+      <div class="sk-top"><div class="sk-block sk-logo"></div><div class="sk-block sk-avatar"></div></div>
+      <div class="sk-block sk-date"></div>
+      <div class="sk-block sk-title"></div>
+      <div class="sk-block sk-subtitle"></div>
+      <div class="sk-block sk-composer"></div>
+      <div class="sk-block sk-nav"></div>
+      <div class="sk-block sk-card"></div>
+      <div class="sk-block sk-card short"></div>
+      <div class="sk-bottom"><div class="sk-block"></div><div class="sk-block"></div></div>
+    </div>
+  </div>
+
+  <div class="app-shell" id="app" aria-hidden="true">
+    <header class="topbar">
+      <a class="wordmark" href="/" aria-label="noto. ホーム"><span class="brand-spark">✳</span> noto<span class="brand-dot">.</span></a>
+      <div class="topbar-right">
+        <div class="sync-state" id="sync-state" role="status"><span class="sync-dot"></span><span id="sync-label">この端末に保存</span></div>
+        <button id="sync-refresh" class="theme-btn press-scale" type="button" aria-label="今すぐ同期" title="今すぐ同期" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M5.5 9A7 7 0 0 1 18 7l2 5M4 12l2 5a7 7 0 0 0 12.5-2"/></svg></button>
+        <button id="settings-btn" class="theme-btn press-scale" type="button" aria-label="設定を開く" title="設定"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.89l.06.06-2.1 2.1-.06-.06a1.7 1.7 0 0 0-1.9-.34l-1.05.44V21h-3v-.9l-1.1-.45a1.7 1.7 0 0 0-1.9.34l-.06.06-2.1-2.1.06-.06A1.7 1.7 0 0 0 6.93 15l-.45-1.1H5v-3h1.48l.45-1.1a1.7 1.7 0 0 0-.34-1.89l-.06-.06 2.1-2.1.06.06a1.7 1.7 0 0 0 1.9.34l1.1-.44V4h3v1.71l1.05.44a1.7 1.7 0 0 0 1.9-.34l.06-.06 2.1 2.1-.06.06a1.7 1.7 0 0 0-.34 1.89l.44 1.1H21v3h-1.16z"/></svg></button>
+        <button id="theme-toggle" class="theme-btn press-scale" type="button" aria-label="ダークモードへ切り替え" aria-pressed="false" title="テーマ切替"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path id="theme-icon" d="M20.5 14.5A8.5 8.5 0 0 1 9.5 3.5 8.5 8.5 0 1 0 20.5 14.5Z"/></svg></button>
+        <button id="account-btn" class="avatar-btn press-scale" type="button" aria-label="Googleでログイン" title="アカウント"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="8" r="3.4"/><path d="M5.2 20c.4-4 3-6 6.8-6s6.4 2 6.8 6"/></svg></button>
+      </div>
+    </header>
+
+    <main class="page" id="home-view">
+      <div class="intro fade-up">
+        <div class="eyebrow" id="date-label"></div>
+        <div class="heading-row"><h1>今日のこと<span class="heading-period">.</span></h1><div class="progress-ring" id="progress-ring" title="完了率" aria-label="完了率 0%"><span id="progress-value">0%</span></div></div>
+        <p class="intro-detail" id="summary-line">タスク 0件 ・ メモ 0件</p>
+      </div>
+
+      <!-- Main interaction lives above the list: capture should never require navigation. -->
+      <section class="capture-panel glass fade-up" aria-labelledby="capture-title">
+        <div class="capture-topline"><div class="section-eyebrow"><span class="capture-sun">✳</span> <span id="capture-title">クイックキャプチャ</span></div><div class="key-hint">⌘ / Ctrl + Enter</div></div>
+        <textarea id="capture-input" aria-label="メモやタスクを入力" rows="2" maxlength="4000" placeholder="ここにメモを書く…" spellcheck="true"></textarea>
+        <div class="capture-actions"><div class="mode-picker" role="group" aria-label="記録の種類"><button type="button" id="mode-note" class="mode-btn selected" aria-pressed="true"><span class="mode-symbol">✎</span> メモ</button><button type="button" id="mode-task" class="mode-btn" aria-pressed="false"><span class="mode-symbol">✓</span> タスク</button></div><button id="add-btn" class="add-btn press-scale" type="button" aria-label="追加する" disabled><span class="plus-sign">＋</span><span>追加</span></button></div>
+      </section>
+
+      <section class="workspace" aria-label="記録一覧">
+        <div class="workspace-heading"><div><h2>マイリスト <span id="total-count" class="total-count">0</span></h2><p class="swipe-helper">タスクを左右にスワイプしてステータス変更</p></div><button class="icon-button press-scale" id="search-toggle" aria-label="検索" title="検索"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="10.9" cy="10.9" r="6.5"/><path d="m16 16 5 5"/></svg></button></div>
+        <div id="search-wrap" class="search-wrap" hidden><input id="search-input" type="search" placeholder="メモとタスクを検索" aria-label="検索キーワード" /><button id="search-clear" aria-label="検索を閉じる" class="search-close">×</button></div>
+        <div class="filter-scroll"><div class="filters" role="tablist" aria-label="リストの絞り込み">
+          <button role="tab" aria-selected="true" data-filter="all" class="filter active">すべて <span id="count-all"></span></button>
+          <button role="tab" aria-selected="false" data-filter="todo" class="filter">未着手 <span id="count-todo"></span></button>
+          <button role="tab" aria-selected="false" data-filter="doing" class="filter">進行中 <span id="count-doing"></span></button>
+          <button role="tab" aria-selected="false" data-filter="done" class="filter">完了 <span id="count-done"></span></button>
+          <button role="tab" aria-selected="false" data-filter="note" class="filter">メモ <span id="count-note"></span></button>
+        </div></div>
+        <div id="item-list" class="item-list" aria-live="polite"></div>
+        <div id="empty-state" class="empty-state" hidden><div class="empty-illustration"><span>✳</span></div><h3 id="empty-title">まだ何もありません</h3><p id="empty-subtitle">上の入力欄から追加できます。</p></div>
+      </section>
+
+      
+    </main>
+
+    <!-- Hash-based views preserve the current note draft and work offline in the PWA. -->
+    <main id="settings-view" class="page subpage" hidden aria-labelledby="settings-title">
+      <button class="back-link press-scale" id="settings-back" type="button">← 戻る</button>
+      <div class="subpage-eyebrow">SETTINGS</div>
+      <h1 id="settings-title">設定<span class="heading-period">.</span></h1>
+      <button id="settings-usage" class="settings-entry glass" type="button" aria-label="無料枠の使用状況を開く">
+        <span class="settings-entry-icon">◴</span><span class="settings-entry-text"><strong>無料枠の使用状況</strong><small>Workers・D1・Workers AI</small></span><span class="settings-entry-arrow">›</span>
+      </button>
+      <div class="settings-note">Cloudflare Freeプランで運用。使用量は必要なときだけ確認できます。</div>
+    </main>
+
+    <main id="usage-view" class="page subpage" hidden aria-labelledby="usage-title">
+      <button class="back-link press-scale" id="usage-back" type="button">← 設定に戻る</button>
+      <div class="subpage-eyebrow">FREE PLAN</div>
+      <div class="usage-title-row"><h1 id="usage-title">無料枠の使用状況<span class="heading-period">.</span></h1><button id="usage-refresh" class="refresh-button press-scale" type="button">更新 ↻</button></div>
+      <p id="quota-source" class="usage-source" role="status">使用量を確認しています…</p>
+      <div id="quota-cards" class="quota-cards" aria-live="polite"></div>
+      <p id="quota-ai-calls" class="quota-ai-calls"></p>
+      <div class="quota-explain glass">
+        <strong>無料で運用するために</strong>
+        <p id="quota-notice">現在の使用量はCloudflareのアカウント全体で集計されます。</p>
+        <p>Freeプランの上限に達したサービスは、追加課金されるのではなく処理が失敗する場合があります。未同期のメモは端末内に保存し、通信復帰後に再送を試みます。</p>
+        <p>Workers・D1・Workers AIの無料枠は毎日 00:00 UTC（日本時間9:00）に更新されます。表示値には集計遅延があります。</p>
+        <a href="https://dash.cloudflare.com/" target="_blank" rel="noopener noreferrer">Cloudflareの公式管理画面で確認 ↗</a>
+      </div>
+    </main>
+
+    <nav class="mobile-dock glass" aria-label="クイック操作"><button id="dock-all" class="dock-btn active" aria-label="すべての記録を表示"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="4" width="16" height="16" rx="4"/><path d="M8 9h8M8 13h8M8 17h5"/></svg><span>リスト</span></button><button id="dock-add" class="dock-center" aria-label="すぐにメモを書く"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg></button><button id="dock-tasks" class="dock-btn" aria-label="進行中のタスクを表示"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/></svg><span>進行中</span></button></nav>
+  </div>
+
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+  <!-- In-place edit sheet also exposes opt-in AI task extraction for notes. -->
+  <div id="dialog-backdrop" class="dialog-backdrop" hidden>
+    <div class="dialog glass" role="dialog" aria-modal="true" aria-labelledby="dialog-title">
+      <div class="dialog-handle"></div><div class="dialog-heading"><h2 id="dialog-title">編集</h2><button type="button" id="dialog-close" aria-label="閉じる" class="dialog-x">×</button></div>
+      <label class="dialog-label" for="edit-content">内容</label><textarea id="edit-content" rows="5" maxlength="4000"></textarea>
+      <div id="edit-task-fields"><label class="dialog-label" for="edit-date">期限</label><input type="date" id="edit-date" /><label class="dialog-label" for="edit-status">ステータス</label><select id="edit-status"><option value="todo">未着手</option><option value="doing">進行中</option><option value="done">完了</option></select></div>
+      <div class="dialog-actions"><button type="button" id="dialog-delete" class="danger-btn">削除</button><button type="button" id="dialog-save" class="primary-btn">保存</button></div>
+      <div id="ai-section" class="ai-section"><div class="ai-label">Workers AI</div><button type="button" id="ai-button" class="ai-button"><span>✧</span> AIでタスクを抽出 <span class="ai-arrow">↗</span></button><div id="ai-suggestions" class="ai-suggestions"></div></div>
+    </div>
+  </div>
+  <div id="account-backdrop" class="dialog-backdrop" hidden><div class="account-pop glass" role="dialog" aria-modal="true" aria-label="アカウント"><button type="button" id="account-close" class="account-close" aria-label="閉じる">×</button><div class="account-icon">✳</div><h2 id="account-title">クラウドに同期</h2><p id="account-description">Googleアカウントでログインすると、別の端末からも使えます。</p><button id="google-signin" class="google-btn" type="button"><svg viewBox="0 0 48 48" width="22" height="22" aria-hidden="true"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.28 5.48-4.82 7.18l7.73 6C44.36 38.03 46.98 31.88 46.98 24.55z"/><path fill="#FBBC05" d="M10.53 28.59A14.4 14.4 0 0 1 9.75 24c0-1.59.27-3.14.76-4.59l-7.98-6.19A23.94 23.94 0 0 0 0 24c0 3.87.93 7.51 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.9-5.8l-7.73-6C30.03 37.6 27.33 38.5 24 38.5c-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg><span id="google-btn-label">Googleでログイン</span></button></div></div>
+</body>
+</html>
