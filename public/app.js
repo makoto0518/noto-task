@@ -183,7 +183,30 @@ function saveEdit(){
   const updated={...current,content,status:current.kind==='task'?clampStatus($('edit-status').value):'todo',dueDate:current.kind==='task'?$('edit-date').value||null:null,updatedAt:new Date().toISOString()};
   state.items=state.items.map(item=>item.id===updated.id?updated:item);persistGuest();render();saveRemote(updated,'PATCH');closeEditor();toast('保存しました');
 }
+/** Use the verified Google profile photo in the account dialog.
+ * The decorative symbol remains the fallback when logged out or an image fails.
+ * DOM APIs avoid treating any profile URL or user data as HTML.
+ */
+function updateAccountAvatar(){
+  const host=$('account-icon');
+  host.classList.remove('has-avatar');
+  host.textContent='✳';
+  const avatarUrl=state.user?.avatarUrl;
+  if(typeof avatarUrl!=='string'||!/^https:\/\/lh3\.googleusercontent\.com\//.test(avatarUrl))return;
+  const img=document.createElement('img');
+  img.alt=''; // The user's name is already announced by the heading below.
+  img.src=avatarUrl;
+  img.decoding='async';
+  img.onerror=()=>{
+    if(!host.contains(img))return; // Ignore errors from an old session/image.
+    host.classList.remove('has-avatar');
+    host.textContent='✳';
+  };
+  host.classList.add('has-avatar');
+  host.replaceChildren(img);
+}
 function showAccount(){
+  updateAccountAvatar();
   $('account-backdrop').hidden=false;
   if(state.user){$('account-title').textContent=state.user.name||state.user.email;const pending=cloudSync?.queue.length||0;$('account-description').textContent=pending ? `${state.user.email} ・ 未同期 ${pending}件。接続後に再送します。` : `${state.user.email} ・ ${syncStatus==='synced'?'同期済み':'接続を確認中'}`;$('google-btn-label').textContent='ログアウト';}
   else{$('account-title').textContent='クラウドに同期';$('account-description').textContent='Googleアカウントでログインすると、別の端末からも使えます。';$('google-btn-label').textContent='Googleでログイン';}
