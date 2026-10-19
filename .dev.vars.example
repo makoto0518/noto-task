@@ -1,0 +1,5 @@
+# Local development only. Copy to .dev.vars and NEVER commit the real file.
+# Create an OAuth Web client in Google Cloud Console. Both are free to set up.
+GOOGLE_CLIENT_ID="replace-with-google-oauth-web-client-id"
+GOOGLE_CLIENT_SECRET="replace-with-google-oauth-web-client-secret"
+APP_ORIGIN="http://localhost:8787"
