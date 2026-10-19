@@ -1,0 +1,12 @@
+// Production-only Cloudflare bindings. Credentials go in Wrangler secrets,
+// never in this tracked file. Stay on Workers FREE (no paid deployment).
+// Replace the D1 database_id only after `wrangler d1 create noto-db`.
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "noto-task",
+  "compatibility_date": "2026-10-16",
+  "main": "./worker/index.js",
+  "assets": { "directory": "./public", "not_found_handling": "single-page-application", "run_worker_first": ["/api/*"] },
+  "d1_databases": [{ "binding": "DB", "database_name": "noto-db", "database_id": "REPLACE_WITH_D1_DATABASE_ID" }],
+  "ai": { "binding": "AI" }
+}
