@@ -117,3 +117,6 @@
 [data-theme="dark"] .back-link,[data-theme="dark"] .refresh-button{background:rgba(39,54,78,.77);border-color:rgba(195,218,255,.15);color:#c3d2ee}
 [data-theme="dark"] .settings-entry-icon{background:#354765}
 @media (max-width:680px){.subpage{padding-top:16px}.quota-cards{grid-template-columns:1fr;gap:12px;margin-top:21px}.quota-card{padding:19px 18px}.quota-numbers{margin:14px 0 12px}.subpage h1{font-size:30px}.usage-title-row h1{font-size:27px}.settings-entry{padding:18px}.quota-foot{min-height:unset}}
+
+/* Separate backup from quota control while preserving existing glass appearance. */
+#settings-backup{margin-top:14px}

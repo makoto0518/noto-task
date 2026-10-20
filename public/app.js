@@ -1,6 +1,7 @@
 import { clampStatus, createItem, getCounts, getVisibleItems, nextStatus, safeItems } from './logic.js';
 import { CloudSync, cacheKey, queueKey } from './sync.js';
 import { renderQuotaPanel } from './quota.js';
+import { buildBackup, backupFilename } from './backup.js';
 
 // Presentational DOM state lives here; pure task rules live in logic.js.
 // CloudSync handles persistence/retries so the UI can update immediately.
@@ -316,6 +317,20 @@ $('theme-toggle').addEventListener('click',toggleTheme);
 $('settings-btn').addEventListener('click',()=>navigate('settings'));
 $('settings-back').addEventListener('click',()=>navigate('home'));
 $('settings-usage').addEventListener('click',()=>navigate('settings/usage'));
+$('settings-backup').addEventListener('click',()=>{
+  if(state.loadingSession){toast('読み込み完了後にバックアップしてください');return;}
+  const snapshot=buildBackup(state.items,{
+    userId:state.user?.id??null,
+    pendingSyncCount:cloudSync?.queue.length??0
+  });
+  const blob=new Blob([JSON.stringify(snapshot,null,2)],{type:'application/json;charset=utf-8'});
+  const url=URL.createObjectURL(blob);
+  const link=document.createElement('a');
+  link.href=url;link.download=backupFilename();
+  document.body.appendChild(link);link.click();link.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),30000);
+  toast(snapshot.pendingSyncCount?'未同期の変更も含めてJSON保存しました':'JSONバックアップを保存しました');
+});
 $('usage-back').addEventListener('click',()=>navigate('settings'));
 $('usage-refresh').addEventListener('click',fetchUsage);
 window.addEventListener('hashchange',displayView);
