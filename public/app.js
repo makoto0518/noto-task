@@ -22,7 +22,7 @@ function errorMessage(error) { return error?.message || '通信に失敗しま�
 async function api(path, opts={}) {
   const response=await fetch('/api'+path,{ credentials:'same-origin', ...opts, headers:{'Content-Type':'application/json', ...(opts.headers||{})} });
   const json=await response.json().catch(()=>({}));
-  if(!response.ok) throw new Error(json.error || `通信エラー (${response.status})`);
+  if(!response.ok) {const error=new Error(json.error || `通信エラー (${response.status})`);error.status=response.status;error.current=json.current??null;throw error;}
   return json;
 }
 function updateSync() {
@@ -232,6 +232,7 @@ async function loadSession(){
       cloudSync=new CloudSync({
         request:api,storage:localStorage,guestKey:storageKey,
         onData:items=>{state.items=items;render();},
+        onConflict:message=>toast(message),
         onStatus:(status)=>{syncStatus=status;updateSync();}
       });
       cloudSync.activate(state.user.id,getLocalItems());
