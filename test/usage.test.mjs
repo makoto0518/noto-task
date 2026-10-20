@@ -33,27 +33,46 @@ test('without a read-only Cloudflare token every item is unknown', async () => {
   assert.ok(Object.values(out.metrics).every(x=>!x.available&&x.used===null));
 });
 
-test('account-wide GraphQL metrics are mapped, AI is not approximated', async () => {
+test('account-wide Workers, D1 and AI neuron usage comes from GraphQL', async () => {
   const calls=[];
-  const fetcher=async (_url, init)=>{
-    calls.push(init);
+  const fetcher=async (_url,init)=>{
+    const req=JSON.parse(init.body);
+    calls.push(req);
     assert.equal(init.headers.Authorization,'Bearer read-only-token');
-    const variables=JSON.parse(init.body).variables;
-    assert.equal(variables.accountTag,'cf-account');
-    const d1=init.body.includes('d1AnalyticsAdaptiveGroups');
-    return new Response(JSON.stringify({data:{viewer:{accounts:[d1?
-      {d1AnalyticsAdaptiveGroups:[{sum:{rowsRead:230,rowsWritten:15}}]} :
-      {workersInvocationsAdaptive:[{sum:{requests:10}},{sum:{requests:20}}]}
-    ]}}}),{status:200});
+    assert.equal(req.variables.accountTag,'cf-account');
+    let dataset;
+    if(req.query.includes('aiInferenceAdaptiveGroups')){
+      assert.match(req.query,/sum \{ totalNeurons \}/);
+      dataset={aiInferenceAdaptiveGroups:[{sum:{totalNeurons:5.53}},{sum:{totalNeurons:5.47}}]};
+    }else if(req.query.includes('d1AnalyticsAdaptiveGroups')){
+      dataset={d1AnalyticsAdaptiveGroups:[{sum:{rowsRead:230,rowsWritten:15}}]};
+    }else{
+      dataset={workersInvocationsAdaptive:[{sum:{requests:10}},{sum:{requests:20}}]};
+    }
+    return Response.json({data:{viewer:{accounts:[dataset]}}});
   };
-  const result=await getAnalyticsMetrics({CF_ANALYTICS_TOKEN:'read-only-token',CF_ACCOUNT_ID:'cf-account'}, {now:new Date('2026-10-20T01:00:00Z'),fetcher});
-  assert.equal(calls.length,2);
+  const result=await getAnalyticsMetrics({CF_ANALYTICS_TOKEN:'read-only-token',CF_ACCOUNT_ID:'cf-account'},{now:new Date('2026-10-20T01:00:00Z'),fetcher});
+  assert.equal(calls.length,3);
   assert.deepEqual(result.metrics.workers,{available:true,used:30});
   assert.deepEqual(result.metrics.d1Reads,{available:true,used:230});
   assert.deepEqual(result.metrics.d1Writes,{available:true,used:15});
-  assert.equal(result.metrics.aiNeurons.available,false);
+  assert.deepEqual(result.metrics.aiNeurons,{available:true,used:11});
 });
 
+test('AI GraphQL unavailable leaves Neurons unknown without hiding Workers and D1',async()=>{
+  const fetcher=async (_url,init)=>{
+    const query=JSON.parse(init.body).query;
+    if(query.includes('aiInferenceAdaptiveGroups'))return Response.json({errors:[{message:'field unavailable'}]});
+    return Response.json({data:{viewer:{accounts:[query.includes('d1AnalyticsAdaptiveGroups')?
+      {d1AnalyticsAdaptiveGroups:[{sum:{rowsRead:4,rowsWritten:2}}]}:
+      {workersInvocationsAdaptive:[{sum:{requests:8}}]}
+    ]}}});
+  };
+  const out=await getAnalyticsMetrics({CF_ANALYTICS_TOKEN:'x',CF_ACCOUNT_ID:'a'},{fetcher});
+  assert.equal(out.metrics.aiNeurons.available,false);
+  assert.equal(out.metrics.workers.used,8);
+  assert.equal(out.metrics.d1Reads.used,4);
+});
 test('upstream analytics failure never becomes zero usage', async () => {
   const out=await getAnalyticsMetrics({CF_ANALYTICS_TOKEN:'x',CF_ACCOUNT_ID:'a'}, {fetcher:async()=>new Response('Unauthorized',{status:403})});
   assert.ok(Object.values(out.metrics).every(x=>x.available===false));
