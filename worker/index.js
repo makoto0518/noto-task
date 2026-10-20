@@ -154,7 +154,12 @@ async function route(request,env){
   }
   if(match&&request.method==='DELETE'){
     const expected=request.headers.get('If-Match');
-    if(typeof expected!=='string'||!validExpectedRevision(expected))return fail('削除前の版情報が必要です',428);
+    if(typeof expected!=='string'||!validExpectedRevision(expected)){
+      // A legacy outbox has no revision. Never execute its deletion, but return
+      // 409 instead of 428 so the client can reconcile and unblock its queue.
+      const current=await getItemRow(env.DB,user.id,match[1]);
+      return Response.json({error:'版情報のない古い削除要求を安全のため中止しました',reason:'legacy_delete',current:current?mapRow(current):null},{status:409,headers:{'Cache-Control':'no-store'}});
+    }
     const write=await env.DB.prepare('DELETE FROM items WHERE user_id=? AND id=? AND updated_at=?')
       .bind(user.id,match[1],expected).run();
     if(write.meta?.changes)return ok({ok:true});
