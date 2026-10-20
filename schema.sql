@@ -36,3 +36,11 @@ CREATE TABLE IF NOT EXISTS ai_usage (
   calls INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY(user_id, day)
 );
+
+-- 【全削除の世代管理】別端末の古い未同期記録が削除後に復活するのを防ぐ。
+-- worker/index.jsのaccountEpoch()と連携する。clear_tokenは並行する削除を区別する。
+CREATE TABLE IF NOT EXISTS account_epochs (
+  user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  epoch INTEGER NOT NULL DEFAULT 0 CHECK(epoch >= 0),
+  clear_token TEXT
+);
