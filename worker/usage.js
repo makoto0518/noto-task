@@ -58,6 +58,18 @@ export async function getAnalyticsMetrics(env, {now=new Date(), fetcher=fetch}={
       }
     } }
   }`;
+  // Workers AI: the account-scoped inference dataset reports billable Neurons
+  // directly. Never estimate from app call counts, token counts or model prices.
+  // The UTC day filter matches the daily Cloudflare Free allowance reset.
+  // Schema/permission mismatches leave AI marked "unavailable" without
+  // affecting already-working Workers and D1 usage data.
+  const aiQuery=`query($accountTag: string!, $day: Date) {
+    viewer { accounts(filter: {accountTag: $accountTag}) {
+      aiInferenceAdaptiveGroups(limit: 1000, filter: {date_geq: $day, date_leq: $day}) {
+        sum { totalNeurons }
+      }
+    } }
+  }`;
   await Promise.all([
     (async()=>{try {
       const data=await graphql(env,workerQuery,variables,fetcher);
@@ -72,8 +84,11 @@ export async function getAnalyticsMetrics(env, {now=new Date(), fetcher=fetch}={
       if(read!==null)metrics.d1Reads={available:true,used:read};
       if(write!==null)metrics.d1Writes={available:true,used:write};
     }catch{/* Schema or permission errors are explicitly unknown. */}})(),
+    (async()=>{try {
+      const data=await graphql(env,aiQuery,variables,fetcher);
+      const used=sumMetric(data?.aiInferenceAdaptiveGroups,'totalNeurons');
+      if(used!==null)metrics.aiNeurons={available:true,used};
+    }catch{/* Unsupported field, permissions, or service outage: do not invent 0. */}})(),
   ]);
-  // No documented, validated Neuron analytics GraphQL field in this integration.
-  // Show a link to the official dashboard instead of an invented percentage.
   return {configured:true,metrics,observedAt:now.toISOString()};
 }
