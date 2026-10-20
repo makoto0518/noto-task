@@ -1,11 +1,17 @@
-// Durable, account-scoped outbox. Writes are optimistic and serialized per device.
-// Stale cross-device edits are saved as separate conflict copies rather than overwriting others.
+/**
+ * 【同期の中心】app.js から渡されたメモ・タスクの変更をCloudflareへ送る。
+ * 「送信待ちキュー（outbox）」を localStorage に保存するので、
+ * 回線が切れても操作を後から再送できる。実際の送信先は worker/index.js。
+ * 異なる端末が同じメモを変更した場合は、上書きせず「競合コピー」を残す。
+ * 注意：クラウド上のデータはD1、端末内の一時保存はlocalStorageという別の場所。
+ */
 import { safeItems } from './logic.js';
 
 /**
- * Storage separation matters: two Google accounts on the same browser must
- * never share their draft synchronization queue. The legacy mizu_* prefix is
- * intentional: changing it would strand notes created by earlier versions.
+ * 【アカウントごとの保存先】キーにGoogleのユーザーIDを含めてデータを分離する。
+ * 同じブラウザで別のGoogleアカウントを使っても、送信待ちキューが混ざらないようにするため。
+ * 旧版から使っている mizu_* は意図的な名前。変更すると古いメモを読めなくなる。
+ * サーバー側でも worker/index.js の user.id で必ず利用者を絞り込む。
  */
 export const cacheKey = userId => `mizu_account_${encodeURIComponent(userId)}_items_v2`;
 export const queueKey = userId => `mizu_account_${encodeURIComponent(userId)}_queue_v2`;
@@ -13,7 +19,11 @@ export function parseStored(storage, key, fallback = []) {
   try { const value = JSON.parse(storage.getItem(key) || 'null'); return Array.isArray(value) ? value : fallback; }
   catch { return fallback; }
 }
-/** Apply unsent local operations over the server snapshot (optimistic UI). */
+/**
+ * 【最新表示の合成】サーバーから受け取った一覧に、まだ送信していない端末側の変更を重ねる。
+ * 先にサーバー一覧だけ表示すると、オフライン編集が一時的に消えたように見えるため。
+ * app.js は合成された結果を受け取り render() で再描画する。
+ */
 export function mergeServerItems(remote, queue) {
   const merged = new Map(safeItems(remote).map(item => [item.id, item]));
   for (const op of queue) {
@@ -25,7 +35,11 @@ export function mergeServerItems(remote, queue) {
   }
   return [...merged.values()].sort((a,b) => b.createdAt.localeCompare(a.createdAt));
 }
-/** Only the latest unsent action for an item matters (put/put/delete collapse). */
+/**
+ * 【送信待ちキューの整理】同じIDの操作が連続したとき、最後の操作だけを残す。
+ * 例：送信前に同じメモを2回編集 → 最新の編集を送信する。
+ * ただし、別端末からの変更検知に必要な expectedUpdatedAt は維持する必要がある。
+ */
 export function compactQueue(queue, op) {
   return [...queue.filter(entry => entry.id !== op.id), op];
 }
@@ -44,7 +58,11 @@ export class CloudSync {
   persistQueue() { this.storage.setItem(queueKey(this.userId),JSON.stringify(this.queue)); }
   persistItems() { this.storage.setItem(cacheKey(this.userId),JSON.stringify(this.items)); }
   publish() { if(this.active) this.onData([...this.items]); }
-  /** Called after OAuth session verification. Merge guest notes safely. */
+  /**
+   * 【ログイン直後】app.js の loadSession() から呼ばれる。
+   * Googleアカウント別の保存データとゲスト時代のメモを合成して、
+   * 送信待ちキューを端末に記録してからゲスト用の保存領域を片付ける。
+   */
   activate(userId, guestItems=[]) {
     this.userId=userId;
     this.queue=validQueue(parseStored(this.storage,queueKey(userId)));
@@ -57,7 +75,7 @@ export class CloudSync {
         known.add(item.id);
       }
     }
-    // Never drop guest notes until their outbox and cached copies are durable.
+    // ゲストメモを消す前に、必ずキューとキャッシュに保存する。順番を逆にすると消失し得る。
     this.persistQueue(); this.persistItems(); this.storage.removeItem(this.guestKey);
     this.publish(); this.status(this.queue.length?'pending':'syncing');
   }
@@ -69,7 +87,8 @@ export class CloudSync {
   recordPut(item, localItems) { this.record({type:'put',id:item.id,item,expectedUpdatedAt:this.expectedRevision(item.id)},localItems); }
   recordDelete(id, localItems) {
     if(this.expectedRevision(id)===null){
-      // An unsent creation can be cancelled locally; no remote DELETE needed.
+      // 作成自体がまだ送られていなければ、ローカルの作成を取り消すだけでよい。
+      // サーバーに存在しないメモへDELETEを送らないための分岐。
       this.queue=this.queue.filter(entry=>entry.id!==id);
       this.version++;
       this.items=safeItems(localItems);
@@ -82,7 +101,7 @@ export class CloudSync {
   record(op,localItems) {
     if(!this.active||!this.userId)return;
     this.queue=compactQueue(this.queue,op);this.version++;
-    // Persist outbox first; loss of the cache cannot lose the mutation.
+    // 画面用キャッシュより先に送信待ちキューを保存。通信中断時も変更を再送できるようにする。
     this.items=safeItems(localItems);
     try { this.persistQueue(); this.persistItems(); this.status('pending'); }
     catch { this.status('error'); }
@@ -101,14 +120,16 @@ export class CloudSync {
     try { await this.flushing; }
     finally {
       this.flushing=null;
-      // A write created while the final pull was in progress must be sent too.
+      // 最後の受信中に新しい編集が増えた場合も、取りこぼさず次の送信を予約する。
       if(this.active&&this.queue.length&&this.version!==startVersion)this.scheduleFlush();
     }
   }
   /**
-   * Process the outbox sequentially. Every request is idempotent on the API:
-   * PUT is an upsert and DELETE succeeds even if the item was already removed.
-   * Keep failed operations for retry when the network returns.
+   * 【キューの送信】同じ端末からの操作を順番にAPIへ送る。
+   * PUTは作成／更新、DELETEは削除。どちらも worker/index.js で本人確認する。
+   * 更新・削除には expectedUpdatedAt（編集前の版）を送り、古い変更による上書きを防止。
+   * 回線障害ならキューを残して後で再送し、409（競合）なら下のcatchで別コピーを作る。
+   * 注意：旧版の無条件PUTとは異なり、サーバー側でも版の一致が必須。
    */
   async performFlush() {
     while(this.active && this.queue.length) {
@@ -128,14 +149,15 @@ export class CloudSync {
           }
           this.persistQueue();
         } else if(index>=0 && result?.item && op.type==='put') {
-          // The first write completed while a new edit was queued. Rebase the
-          // newer local mutation on this precise server revision.
+          // 通信中に同じメモをさらに編集した場合、次の送信の基準を直前の保存結果に更新する。
+          // これをしないと自分自身の連続編集まで409競合になってしまう。
           this.queue[index].expectedUpdatedAt=result.item.updatedAt;
           this.persistQueue();
         }
       } catch(error) {
         if(error?.status!==409){this.status('pending');return;}
-        // Preserve local edits even when the remote item changed or was deleted.
+        // 別端末で更新されていても、今回の編集内容を捨てず「【競合コピー】」として保存する。
+        // 元メモはサーバーの最新版を採用し、利用者が後から両方を見比べられるようにする。
         const index=this.queue.findIndex(entry=>entry.id===op.id);
         if(index>=0&&this.queue[index]===op){
           this.queue.splice(index,1);
@@ -156,8 +178,10 @@ export class CloudSync {
     if(this.active)await this.refresh();
   }
   /**
-   * Pull changes from another device. A version check prevents an older GET
-   * response from overwriting a newer locally queued edit.
+   * 【最新データの取得】別端末の変更をGET /api/itemsから受け取る。
+   * 通信を始めたあとに新しい編集が発生したら、古い応答を採用しない。
+   * 古い応答で端末内の未同期変更を上書きしないための version チェック。
+   * app.js の「同期」ボタンや25秒ごとの同期からも呼ばれる。
    */
   async refresh() {
     if(!this.active||!this.userId)return;

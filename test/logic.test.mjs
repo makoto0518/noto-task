@@ -58,10 +58,10 @@ test('OAuth initiation sets state and PKCE HttpOnly Secure cookies',async()=>{
 test('legacy DELETE without If-Match returns recoverable conflict without deleting data',async()=>{
   const url='https://noto.example/api/items/aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa';
   const real=globalThis.crypto;
-  // Exercise the status branch through a fake authenticated request.
+  // 旧版の削除要求に版情報がない場合の安全な処理を、コード構造の確認で検査する。
   const {__test}=await import('../worker/index.js');
   assert.equal(typeof __test.normalizeItem,'function');
-  // Contract: missing revision is not permitted to perform a delete.
+  // 版情報のないDELETEをそのまま実行しないという契約を確認。実D1接続テストではない。
   const source=await import('node:fs/promises').then(fs=>fs.readFile(new URL('../worker/index.js',import.meta.url),'utf8'));
   assert.match(source,/reason:'legacy_delete'/);
   assert.match(source,/status:409/);

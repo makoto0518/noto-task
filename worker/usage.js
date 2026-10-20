@@ -1,7 +1,9 @@
 /**
- * Read-only Cloudflare Analytics adapter. Only the configured owner may use it.
- * No API token is sent to browsers; Cloudflare credentials must be Worker secrets.
- * Missing / failing metrics are null, NEVER zero (zero would suggest full allowance).
+ * 【無料枠の実データ取得】Cloudflare AnalyticsのGraphQL APIを読み取り専用で呼び出す。
+ * worker/index.jsの /api/usage から、管理者本人と確認できた場合のみ利用する。
+ * CF_ANALYTICS_TOKENはWorkerのSecretに保存し、ブラウザへは絶対に返さない。
+ * 取得失敗を「0」と扱うと残り枠が十分だと誤認するため、null（不明）にする。
+ * UI側の public/quota.js が「未取得」という表記に変換する。
  */
 const endpoints = 'https://api.cloudflare.com/client/v4/graphql';
 export const QUOTA_DAY_LIMITS = Object.freeze({workers: 100000, d1Reads: 5000000, d1Writes: 100000, aiNeurons: 10000});
@@ -34,7 +36,11 @@ async function graphql(env, query, variables, fetcher) {
     return json.data?.viewer?.accounts?.[0];
   } finally { clearTimeout(timeout); }
 }
-/** Analytics must be account-wide because all Workers/D1 resources share Free quotas. */
+/**
+ * 【アカウント全体を集計】noto.利用者や別のWorkerも同じCloudflare無料枠を共有する。
+ * そのためユーザー個人の値ではなくCF_ACCOUNT_ID全体のデータを集計する。
+ * テストではfetcherを差し替え、秘密情報や実際のAPIを使わず結果を検証できる。
+ */
 export async function getAnalyticsMetrics(env, {now=new Date(), fetcher=fetch}={}) {
   const metrics = {
     workers: {available:false,used:null}, d1Reads:{available:false,used:null},
@@ -43,7 +49,7 @@ export async function getAnalyticsMetrics(env, {now=new Date(), fetcher=fetch}={
   if (!env.CF_ANALYTICS_TOKEN || !env.CF_ACCOUNT_ID) return {configured:false,metrics,observedAt:null};
   const {day,since,until} = utcDay(now);
   const variables={accountTag:env.CF_ACCOUNT_ID, since, until, day};
-  // Use explicit 999-row cap: any truncated response must NOT be shown as a total.
+  // 1回の取得上限に達して集計結果が途中で切れた可能性があるときは合計値と断定しない。
   const workerQuery=`query($accountTag: string, $since: string, $until: string) {
     viewer { accounts(filter: {accountTag: $accountTag}) {
       workersInvocationsAdaptive(limit: 1000, filter: {datetime_geq: $since, datetime_leq: $until}) {
@@ -58,11 +64,10 @@ export async function getAnalyticsMetrics(env, {now=new Date(), fetcher=fetch}={
       }
     } }
   }`;
-  // Workers AI: the account-scoped inference dataset reports billable Neurons
-  // directly. Never estimate from app call counts, token counts or model prices.
-  // The UTC day filter matches the daily Cloudflare Free allowance reset.
-  // Schema/permission mismatches leave AI marked "unavailable" without
-  // affecting already-working Workers and D1 usage data.
+  // Workers AIのNeuronsはCloudflareが計測した値を直接取得する。
+  // 「AIを3回呼んだから何Neurons」と推測しない（モデル・入力によって計算量が異なる）。
+  // 集計対象日はUTC（世界標準時）で区切り、Free枠の更新と対応させる。
+  // APIの形式や権限が違って取得に失敗しても、Workers/D1の数字まで隠さない。
   const aiQuery=`query($accountTag: string!, $day: Date) {
     viewer { accounts(filter: {accountTag: $accountTag}) {
       aiInferenceAdaptiveGroups(limit: 1000, filter: {date_geq: $day, date_leq: $day}) {
@@ -76,19 +81,19 @@ export async function getAnalyticsMetrics(env, {now=new Date(), fetcher=fetch}={
       const groups=data?.workersInvocationsAdaptive;
       const value= sumMetric(groups,'requests');
       if(value !== null) metrics.workers={available:true,used:value};
-    }catch{/* Show 'unavailable', not fake zero. */}})(),
+    }catch{/* 取得できない場合は「未取得」。実際に0回使用したとは断定しない。 */}})(),
     (async()=>{try {
       const data=await graphql(env,d1Query,variables,fetcher);
       const groups=data?.d1AnalyticsAdaptiveGroups;
       const read=sumMetric(groups,'rowsRead'),write=sumMetric(groups,'rowsWritten');
       if(read!==null)metrics.d1Reads={available:true,used:read};
       if(write!==null)metrics.d1Writes={available:true,used:write};
-    }catch{/* Schema or permission errors are explicitly unknown. */}})(),
+    }catch{/* APIの形式・権限エラーは「未取得」として扱う。 */}})(),
     (async()=>{try {
       const data=await graphql(env,aiQuery,variables,fetcher);
       const used=sumMetric(data?.aiInferenceAdaptiveGroups,'totalNeurons');
       if(used!==null)metrics.aiNeurons={available:true,used};
-    }catch{/* Unsupported field, permissions, or service outage: do not invent 0. */}})(),
+    }catch{/* AIデータの権限不足や障害は0扱いせず「未取得」を維持する。 */}})(),
   ]);
   return {configured:true,metrics,observedAt:now.toISOString()};
 }

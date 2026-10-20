@@ -1,12 +1,21 @@
 import { clampStatus, createItem, getCounts, getVisibleItems, nextStatus, safeItems } from './logic.js';
+/**
+ * 【画面の司令塔】index.html のボタンや入力欄に動作を結び付けるファイル。
+ * 役割分担：logic.js＝データの計算、sync.js＝端末保存とクラウド同期、
+ * backup.js＝JSONバックアップ、quota.js＝無料枠の表示。
+ * 実際のAPI処理は worker/index.js、見た目は style.css が担当する。
+ * 学習の順番は「addItem → saveRemote → sync.js の recordPut」が分かりやすい。
+ */
 import { CloudSync, cacheKey, queueKey } from './sync.js';
 import { renderQuotaPanel } from './quota.js';
 import { buildBackup, backupFilename } from './backup.js';
 
-// Presentational DOM state lives here; pure task rules live in logic.js.
-// CloudSync handles persistence/retries so the UI can update immediately.
+// state は画面が今表示しているデータ（表示用の状態）。
+// 通信の完了を待たずに先に表示し、失敗時の再送は sync.js の CloudSync に任せる。
+// タスクの状態遷移や検索の計算は logic.js に分け、画面処理との混在を防ぐ。
 const $ = (id) => document.getElementById(id);
-// Keep legacy mizu_* keys for backward compatibility with existing notes.
+// 保存キー名が旧称 mizu_* のままなのは、旧版の端末内メモを読めるようにするため。
+// 名前だけを安易に変更すると、以前のデータが見えなくなる場合がある。
 const storageKey = 'mizu_guest_items_v1';
 const draftKey = 'mizu_capture_draft_v1';
 let cloudSync = null;
@@ -19,7 +28,12 @@ function getLocalItems() {
 }
 function persistGuest() { if (!state.user) { try { localStorage.setItem(storageKey, JSON.stringify(state.items)); } catch { toast('保存容量が不足しています'); } } }
 function errorMessage(error) { return error?.message || '通信に失敗しました'; }
-/** Same-origin API wrapper. The server authenticates using an HttpOnly cookie. */
+/**
+ * 【APIの共通窓口】例えば api('/items') は同じサイトの /api/items にアクセスする。
+ * GoogleログインのセッションCookieはブラウザが自動送信し、JSからは読み取れない。
+ * サーバー側 worker/index.js の route() が本人確認と権限確認を行う。
+ * エラーの status/current は sync.js に渡り、409（競合）を判定するために必要。
+ */
 async function api(path, opts={}) {
   const response=await fetch('/api'+path,{ credentials:'same-origin', ...opts, headers:{'Content-Type':'application/json', ...(opts.headers||{})} });
   const json=await response.json().catch(()=>({}));
@@ -64,7 +78,12 @@ function todayLabel() {
   const d=new Date();const weekdays=['日曜日','月曜日','火曜日','水曜日','木曜日','金曜日','土曜日'];
   return `${d.getMonth()+1}月${d.getDate()}日 ${weekdays[d.getDay()]}`;
 }
-/** Rebuild visible cards from authoritative state; never insert user text as HTML. */
+/**
+ * 【一覧の再描画】state.items から件数・達成率・カードを組み立て直す。
+ * 集計や絞り込みは logic.js、カードの外観は style.css と対応する。
+ * メモ本文は innerHTML に混ぜず textContent に設定し、
+ * 入力された文字が意図せずHTMLとして実行されないようにする。
+ */
 function render() {
   const counts=getCounts(state.items);
   $('total-count').textContent=String(counts.all);
@@ -88,9 +107,11 @@ function render() {
   }
 }
 /**
- * Pointer Events unify mouse and Android touch. Horizontal movement must
- * exceed vertical movement to avoid hijacking the page's normal scrolling.
- * A 72px threshold commits one status transition; small gestures snap back.
+ * 【タスクカードのスワイプ】Pointer Events を使い、PCのマウスとAndroidの指を共通処理する。
+ * 横方向の動きが縦方向より大きい場合だけスワイプとして扱うのは、
+ * スマホの通常の縦スクロールを邪魔しないため。
+ * 72px以上動かしたときだけ logic.js の nextStatus() で状態を進める／戻す。
+ * 変更したタスクは saveRemote() → sync.js の順にクラウドへ送られる。
  */
 function makeCard(item) {
   const wrap=document.createElement('div');wrap.className='item-swipe-wrap';wrap.dataset.id=item.id;
@@ -142,7 +163,12 @@ function toast(message, undoHandler) {
   state.toastTimer=setTimeout(hideToast,4400);
 }
 function hideToast(){const el=$('toast');el.classList.remove('visible');state.undo=null;if(state.toastTimer)clearTimeout(state.toastTimer);setTimeout(()=>{if(!el.classList.contains('visible'))el.hidden=true;},260);}
-/** Optimistic write: local render first, enqueue the cloud mutation second. */
+/**
+ * 【先に画面へ反映する保存方式】回線が遅くても入力を待たせないため、
+ * addItem()/saveEdit() が先に state を更新し、そのあと recordPut() に送信を依頼する。
+ * sync.js は送信待ちの内容を端末内に保持し、オフラインなら後で再送する。
+ * worker/index.js の PUT /api/items/:id が最終的にD1へ保存する。
+ */
 function saveRemote(item) {
   if(!state.user)return;
   cloudSync?.recordPut(item,state.items);
@@ -184,9 +210,11 @@ function saveEdit(){
   const updated={...current,content,status:current.kind==='task'?clampStatus($('edit-status').value):'todo',dueDate:current.kind==='task'?$('edit-date').value||null:null,updatedAt:new Date().toISOString()};
   state.items=state.items.map(item=>item.id===updated.id?updated:item);persistGuest();render();saveRemote(updated,'PATCH');closeEditor();toast('保存しました');
 }
-/** Use the verified Google profile photo in the account dialog.
- * The decorative symbol remains the fallback when logged out or an image fails.
- * DOM APIs avoid treating any profile URL or user data as HTML.
+/**
+ * 【アカウント画像】worker/index.js がGoogleから取得した画像URLを表示する。
+ * 画像を読み込めない場合やログアウト中は従来の「✳」を使う。
+ * URLをHTML文字列として結合せず、img要素のsrcに代入するのは安全性のため。
+ * HTMLの id="account-icon" と style.css の .account-icon が対応する。
  */
 function updateAccountAvatar(){
   const host=$('account-icon');
@@ -195,7 +223,7 @@ function updateAccountAvatar(){
   const avatarUrl=state.user?.avatarUrl;
   if(typeof avatarUrl!=='string'||!/^https:\/\/lh3\.googleusercontent\.com\//.test(avatarUrl))return;
   const img=document.createElement('img');
-  img.alt=''; // The user's name is already announced by the heading below.
+  img.alt=''; // 直下の見出しに氏名を表示するため、画像の代替テキストで重複して読ませない。
   img.src=avatarUrl;
   img.decoding='async';
   img.onerror=()=>{
@@ -224,7 +252,11 @@ async function logout(){
   cloudSync=null;syncStatus='local';
   state.user=null;state.items=getLocalItems();updateSync();render();closeAccount();toast('ログアウトしました');
 }
-/** Restore the Google session in background without blocking local input. */
+/**
+ * 【起動時のログイン復元】/api/session で本人確認し、ログイン済みなら CloudSync を開始する。
+ * 通信中も入力欄を使えるよう非同期で実行する（initialize() と連携）。
+ * 端末内の未同期データは sync.js に引き継がれるので、削除してはいけない。
+ */
 async function loadSession(){
   try{
     const result=await api('/session');
@@ -241,10 +273,15 @@ async function loadSession(){
       await cloudSync.syncNow();
       if(location.hash === '#/settings/usage') fetchUsage();
     }
-  }catch(error){ /* A temporary API outage must not block local notes. */ }
+  }catch(error){ /* 一時的な通信障害でも、端末内でのメモ作成は続けられるようにする。 */ }
   finally{state.loadingSession=false;}
 }
-/** AI is opt-in: only an explicit button press sends note text to Workers AI. */
+/**
+ * 【AIタスク抽出】利用者が「AIでタスクを抽出」を押したときだけ本文を送る。
+ * worker/index.js の /api/ai/tasks → task-extraction.js で候補を検証する。
+ * 候補は自動保存せず、「＋タスク化」を押したものだけ addItem() で登録する。
+ * 自由記述のメモは個人情報を含むことがあるため、無断でAIへ送らない。
+ */
 async function runAI(){
   if(!state.user){closeEditor();showAccount();toast('AI機能にはGoogleログインが必要です');return;}
   const text=$('edit-content').value.trim();if(!text){toast('メモの内容を入力してください');return;}
@@ -261,7 +298,11 @@ async function runAI(){
   } catch(error){toast('AIを利用できません: '+errorMessage(error));}
   finally{button.disabled=false;button.innerHTML='<span>✧</span> AIでタスクを抽出 <span class="ai-arrow">↗</span>';}
 }
-/** Show the full-screen skeleton briefly, but prioritize usable input. */
+/**
+ * 【起動処理】まず端末内のデータと下書きを復元し、操作できる画面を優先して表示する。
+ * スケルトン（読み込み中の仮画面）は index.html にあり、style.css で表示を制御。
+ * Googleログイン確認は loadSession() に任せ、通信が遅くても入力を妨げない。
+ */
 async function initialize(){
   state.items=getLocalItems();$('date-label').textContent=todayLabel();applyTheme();displayView();
   try{$('capture-input').value=localStorage.getItem(draftKey)||'';}catch{}
@@ -274,7 +315,11 @@ async function initialize(){
   if(matchMedia('(min-width: 681px)').matches)$('capture-input').focus({preventScroll:true});
 }
 
-/** Navigate between isolated screens. A hash URL keeps browser Back and offline PWA working. */
+/**
+ * 【画面切り替え】URLの #/settings などを見て、index.html の各main要素を切り替える。
+ * ページ全体を読み直さないので、入力途中の下書きが消えにくい。
+ * ブラウザの「戻る」操作にも対応し、インストール型PWAでも使いやすい。
+ */
 function displayView() {
   const destination = location.hash === '#/settings/usage' ? 'usage'
     : location.hash === '#/settings' ? 'settings' : 'home';
@@ -283,16 +328,16 @@ function displayView() {
   $('usage-view').hidden = destination !== 'usage';
   document.querySelector('.mobile-dock').hidden = destination !== 'home';
   if (destination === 'usage') fetchUsage();
-  // The input value remains mounted in the DOM, even while its screen is hidden.
+  // 別の画面に移っても入力欄はDOMに残るため、書きかけの文章を保持できる。
   window.scrollTo({ top:0, behavior:'instant' });
 }
 function navigate(view) {
   const next = view === 'home' ? '' : `#/${view}`;
   if (location.hash === next) displayView();
-  else location.hash = next; // hashchange handles the screen once, avoiding duplicate API calls.
+  else location.hash = next; // hashchangeイベントが描画を実行する。重複呼び出しを避ける。
 }
 async function fetchUsage() {
-  // No periodic quota polling: navigating here or tapping 更新 is the only trigger.
+  // 無料枠の照会は画面を開いたときと「更新」時だけ。定期通信による無駄なAPI消費を防ぐ。
   $('usage-refresh').disabled = true;
   $('quota-source').textContent = '使用量を確認しています…';
   renderQuotaPanel(null);
@@ -304,7 +349,7 @@ async function fetchUsage() {
   }
   try {
     const info = await api('/usage');
-    // Ignore a stale request if the user has left the usage screen.
+    // 通信が返るまでに画面を移動した場合は、古い使用量結果を表示しない。
     if (location.hash === '#/settings/usage') renderQuotaPanel(info);
   } catch (error) {
     renderQuotaPanel(null);
@@ -339,7 +384,8 @@ const systemTheme=matchMedia('(prefers-color-scheme: dark)');
 systemTheme.addEventListener?.('change',event=>{if(!localStorage.getItem('mizu_theme_v1')){document.documentElement.dataset.theme=event.matches?'dark':'light';applyTheme();}});
 window.addEventListener('online',()=>cloudSync?.syncNow());
 document.addEventListener('visibilitychange',()=>{if(!document.hidden)cloudSync?.syncNow();});
-// Cheap foreground polling instead of paid real-time infra or always-on sockets.
+// 画面表示中だけ25秒ごとに同期。常時接続の有料サービスを使わないための設計。
+// 実際の再送や競合検知は sync.js、サーバー上の保存は worker/index.js が担当する。
 setInterval(()=>{if(!document.hidden&&navigator.onLine)cloudSync?.syncNow();},25000);
 $('mode-note').addEventListener('click',()=>setMode('note'));
 $('mode-task').addEventListener('click',()=>setMode('task'));

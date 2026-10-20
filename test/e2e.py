@@ -109,7 +109,7 @@ def run():
     check('User content is escaped (XSS prevention)',safety)
     check('No JavaScript exceptions during mobile flows',lambda:assert_no_errors(js_errors))
     def quota_navigation():
-        # Settings is a separate screen; we never crowd the quick-capture homepage.
+        # 設定画面は別ページに置き、すぐメモを入力できるホーム画面を複雑にしない設計を確認。
         assert page.locator('#quota-cards').is_hidden()
         page.locator('#capture-input').fill('下書きのまま画面を移動')
         page.locator('#settings-btn').click()
@@ -118,7 +118,7 @@ def run():
         page.locator('#settings-usage').click()
         expect(page.locator('#usage-view')).to_be_visible()
         expect(page.locator('.quota-card')).to_have_count(4)
-        # No Cloudflare token/session: missing bars must remain unknown.
+        # Cloudflare認証がない場合は利用量を「0」ではなく「未取得」と表示することを確認。
         assert page.locator('.quota-state').all_inner_texts() == ['未取得'] * 4
         assert page.locator('.quota-value').count() == 0
         assert page.locator('.quota-meter-fill').evaluate_all('(els)=>els.every(e=>e.style.width === "0%")')
@@ -136,12 +136,12 @@ def run():
         page.go_back(wait_until='domcontentloaded')
         expect(page.locator('#settings-view')).to_be_visible()
         page.locator('#settings-back').click()
-    # Browser back on about:blank is restricted in this harness; URL routing is tested separately.
+    # このテスト環境のabout:blankではブラウザの戻る操作に制約があるため、URL画面切替は別途確認。
     page.screenshot(path=str(REPORT/'mizu-mobile.png'),full_page=True)
     def no_overflow():
         assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth+1')
     check('Mobile layout has no horizontal overflow',no_overflow)
-    # Desktop reload and keyboard shortcut
+    # PCでの再読込とショートカットキーの動作を確認。
     desk=browser.new_context(viewport={'width':1440,'height':900})
     dp=desk.new_page();dp.set_content(HTML);dp.locator('#skeleton').wait_for(state='detached')
     def desktop():
@@ -151,7 +151,7 @@ def run():
         dp.keyboard.press('Control+Enter');expect(dp.locator('.item-content').filter(has_text='ショートカット保存')).to_have_count(1)
     check('Desktop autofocus and Ctrl+Enter to capture',desktop)
     dp.screenshot(path=str(REPORT/'mizu-desktop.png'),full_page=True)
-    # Mocked cloud login and AI integration: verify frontend exchange ONLY
+    # クラウドログインとAIはモック（偽物の応答）で画面動作のみ検証。本番サービスの実通信テストではない。
     cloud_ctx=browser.new_context(viewport={'width':390,'height':844},is_mobile=True,has_touch=True)
     cp=cloud_ctx.new_page();cp.set_content(HTML);cp.locator('#skeleton').wait_for(state='detached')
     def guest_merge():
@@ -176,7 +176,7 @@ def run():
         cp.locator('#google-signin').click()
         expect(cp.locator('#sync-label')).to_have_text('この端末に保存')
     check('Sign out returns to guest storage',logout_test)
-    # Offline API fallback
+    # ネット切断時にAPIが失敗しても、メモ画面が使えるか確認。
     off=browser.new_context(viewport={'width':375,'height':812});op=off.new_page()
     op.set_content(HTML);op.evaluate('window.__offlineMock=true');op.set_content(HTML);op.locator('#skeleton').wait_for(state='detached')
     def offline():
@@ -186,7 +186,7 @@ def run():
         expect(op.locator('.item-content').filter(has_text='API停止中でも保存')).to_have_count(1)
     check('API outage does not block local note capture',offline)
     def manual_theme():
-        # Toggle without settings dialog, and retain preference after reload.
+        # 設定画面を開かずテーマを切り替え、再読込後も選択が保持されるか確認。
         assert dp.locator('html').get_attribute('data-theme')=='light'
         dp.locator('#theme-toggle').click()
         expect(dp.locator('html')).to_have_attribute('data-theme','dark')

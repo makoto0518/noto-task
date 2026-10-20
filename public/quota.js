@@ -1,7 +1,9 @@
 /**
- * Quota view only: it is intentionally not mounted on the capture screen.
- * Values come from the authenticated server API; missing numbers stay unknown.
- * Never generate a fictitious usage percentage or infer Neurons from AI call counts.
+ * 【無料枠の見た目を担当】app.js の fetchUsage() が取得した数値をカードとして描画する。
+ * 集計の取得は worker/index.js の /api/usage → worker/usage.js に任せる。
+ * 日常のメモ入力画面とは分離し、設定を開いたときだけ見られるようにする。
+ * 取得できなかった数値は「未取得」と表示し、ゼロと誤認させない。
+ * AIボタンの実行回数とNeurons（AIの計算量）は単位が違うので混ぜない。
  */
 export const FREE_LIMITS = [
   { key: 'workers', title: 'Workers API', unit: '回 / 日', limit: 100000 },
@@ -11,7 +13,7 @@ export const FREE_LIMITS = [
 ];
 
 export function quotaView(value, limit) {
-  // If Cloudflare analytics is disconnected or delayed, do not claim a remaining allowance.
+  // API障害や集計遅延で不明なときは、残り使用可能量を計算して表示しない。
   if (!Number.isFinite(value) || value < 0) return { known: false, percent: null, remaining: null };
   return {
     known: true,
@@ -70,8 +72,8 @@ export function renderQuotaPanel(data) {
   } else {
     info.textContent = '現在の使用量は未接続です。値を推測して表示することはありません。';
   }
-  // Account totals also contain usage from other Workers and databases. Do not imply
-  // that these bars represent only requests initiated by this device/user.
+  // これらはCloudflareアカウント全体の値。他の利用者や別のWorkerの使用分も含む。
+  // 「自分だけの使用量」と勘違いさせないため、アカウント全体と画面に明記する。
   quotaElement('quota-notice').textContent = data?.message || 'アカウント全体の無料枠が対象です。集計には遅延があります。';
   if (data?.aiCalls && Number.isFinite(data.aiCalls.used)) {
     quotaElement('quota-ai-calls').textContent = `noto.のAIボタン：本日 ${data.aiCalls.used} / 20回（これはNeuronsの使用率ではありません）`;

@@ -9,7 +9,7 @@ class Handler(SimpleHTTPRequestHandler):
     def do_GET(self):
         p=urllib.parse.urlparse(self.path).path
         if p=='/api/session':
-            # slow session to verify full screen skeleton handling
+            # セッションの応答を意図的に遅くして、読み込み中の仮画面が適切に表示されるか検証する。
             if os.environ.get('SLOW_SESSION')=='1':time.sleep(0.75)
             return self.reply({'authenticated':self.auth(), 'user':{'id':'mock-user','name':'E2E User','email':'test@example.com','avatarUrl':''} if self.auth() else None})
         if p=='/api/items':

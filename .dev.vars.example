@@ -1,5 +1,5 @@
-# Local development only. Copy to .dev.vars and NEVER commit the real file.
-# Create an OAuth Web client in Google Cloud Console. Both are free to set up.
+# ローカル開発専用の見本。.dev.varsへコピーし本物の値を設定するが、GitHubには絶対にアップしない。
+# GOOGLE_CLIENT_ID等はGoogle Cloudで作成するOAuth Webクライアントから取得。秘密値をチャットにも送らない。
 GOOGLE_CLIENT_ID="replace-with-google-oauth-web-client-id"
 GOOGLE_CLIENT_SECRET="replace-with-google-oauth-web-client-secret"
 APP_ORIGIN="http://localhost:8787"

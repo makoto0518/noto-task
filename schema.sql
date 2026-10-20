@@ -1,6 +1,7 @@
--- D1 uses SQLite. Each item belongs to one Google user (Google sub ID).
--- Secrets are never stored here: session tokens are SHA-256 digests only.
--- This script is safe to re-run (IF NOT EXISTS); no destructive migrations.
+-- Cloudflare D1はSQLite互換。itemsのuser_idはGoogleログインで得たユーザーIDを保存する。
+-- worker/index.jsのSELECT/UPDATE/DELETEは必ずuser_idで絞り、他人のデータを混ぜない。
+-- Googleセッションの生トークンは保存せず、SHA-256ハッシュだけをsessionsテーブルに保存する。
+-- IF NOT EXISTSにより既存のテーブルを消さずに再実行可能。既存データの削除操作は書かない。
 CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY,
   email TEXT NOT NULL,
@@ -25,10 +26,10 @@ CREATE TABLE IF NOT EXISTS items (
   updated_at TEXT NOT NULL,
   PRIMARY KEY (user_id, id)
 );
--- This composite index supports the authenticated list query and its sort.
+-- user_id別に作成日時の新しい順で一覧を取得するSQLを高速化するための複合インデックス。
 CREATE INDEX IF NOT EXISTS items_user_created ON items(user_id, created_at DESC);
--- Per-user/day quota prevents a single user from exhausting the AI allowance.
--- Global Workers AI 10,000-neuron/day quota is enforced by Cloudflare Free.
+-- AIボタンの回数はユーザーIDとUTC日付ごとに数える（worker/index.jsのhandleAIと連携）。
+-- 注意：20回/人はアプリ側の制限。CloudflareのNeurons無料枠は友達を含めアカウント全体で共有する。
 CREATE TABLE IF NOT EXISTS ai_usage (
   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   day TEXT NOT NULL,

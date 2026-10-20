@@ -18,10 +18,79 @@
 | Cloudflare D1 / Workers AI | **D1による端末間データ共有をユーザーが確認済み** / Workers AIの本番呼び出し・UI描画を確認、従来モデルの日本語抽出精度は失敗。Gemma 4＋原文根拠照合で日本語3件を抽出し、タスク化・Android同期を実機確認済み |
 | GitHub Actions | GitHub上のチェック成功を確認済み。実クラウド接続テストとは別 |
 | Android PWA | **ホーム画面インストール・スタンドアロン起動・ログイン維持・データ表示・Windows同期の5項目を実機確認済み** |
-| JSONバックアップ | 実装済み / 自動テスト済み。ダウンロードの実機確認はこれから（復元は未実装） |
+| JSONバックアップ | 実装済み / 自動テスト済み。ダウンロードの実機確認済み（復元は未実装） |
 | Cloudflare本番URL | **公開済み:** https://noto-task.kato25801313.workers.dev |
 
 **「ローカルでテスト成功」と「クラウド上でも問題なく動く」は違います。** Google OAuth、実D1、Android実機同期は今回の条件で実機確認済み。Workers AIも今回の日本語テストで確認済み。ただし未テストの操作は別途確認してください。
+
+
+## 初学者向け：どのファイルが何を担当している？
+
+**重要：プログラムの処理とコメントは別物です。** `//`、`/* ... */`、HTMLの `<!-- ... -->`、SQLの `--` は解説文であり、コンピューターが実行する命令ではありません。今回の修正は解説を日本語化したもので、アプリの処理内容は変更していません。
+
+### 1. 最初に押さえる全体像
+
+| ファイル | 役割 | 関連するファイル |
+| --- | --- | --- |
+| `public/index.html` | 入力欄・一覧・ボタンなど画面の骨組み | `app.js` がIDで要素を探す |
+| `public/style.css` | 色・Glass UI・スワイプ・ダークモードの見た目 | `index.html` のclass、`theme.js` |
+| `public/app.js` | クリック、メモ追加、編集画面、画面の再描画 | `logic.js`、`sync.js`、`backup.js`、`quota.js` |
+| `public/logic.js` | タスク状態、検索、件数計算、入力検査 | `app.js`、`sync.js`、テスト |
+| `public/sync.js` | 未同期の保存・API送信・競合コピー | `app.js` → `worker/index.js` |
+| `worker/index.js` | 認証、API、D1のメモ保存、AIの呼び出し、権限確認 | `schema.sql`、`worker/usage.js`、`worker/task-extraction.js` |
+| `schema.sql` | D1のusers、sessions、items、ai_usageテーブル | `worker/index.js` のSQL |
+| `worker/task-extraction.js` | AIへの日本語指示、原文に存在する候補の検査 | `worker/index.js` のAI API |
+| `worker/usage.js` | Cloudflareの使用量を読み取り専用で集計 | `worker/index.js` → `public/quota.js` |
+| `public/quota.js` | 集計値を無料枠のカードとして表示 | `app.js`、`worker/usage.js` |
+| `public/backup.js` | メモ・タスクをJSON形式で書き出す | `app.js`、`logic.js` |
+| `public/theme.js` | 初回表示前のライト／ダーク設定 | `index.html`、`style.css` |
+| `public/sw.js` | PWAをオフラインで開くための静的ファイルキャッシュ | `index.html`、`app.js` |
+| `wrangler.jsonc` | Worker、D1、Workers AIの接続設定 | `worker/index.js` で `env.DB`、`env.AI` として参照 |
+| `test/*.test.mjs` | 入力処理、同期、AI、無料枠などを確認する自動テスト | 対応する`public/`、`worker/`の各ファイル |
+
+### 2. メモを追加したときに何が起きるか
+
+```text
+① index.html: 利用者がメモを入力し「追加」を押す
+          ↓
+② app.js: addItem() で画面にすぐ追加する
+          ↓
+③ logic.js: createItem() でID・作成日時などを付ける
+          ↓
+④ app.js → sync.js: recordPut() で送信待ちキューに保存
+          ↓
+⑤ sync.js → worker/index.js: PUT /api/items/:id を送信
+          ↓
+⑥ worker/index.js → D1: 本人のuser_idで安全に保存
+          ↓
+⑦ sync.js → app.js: 同期後のデータを反映して再描画
+```
+
+**なぜ端末に先に保存するの？** 通信の完了を待たずにメモを記録でき、電波がないときも書けるようにするため。再接続したら送信待ちの変更を送ります。ただし、端末データの削除や端末故障への完全な保証ではありません。
+
+### 3. 2台で同時に編集したら？
+
+`sync.js` は編集前の版（`expectedUpdatedAt`）をサーバーへ渡します。`worker/index.js` はD1の `updated_at` と照合し、古い版からの更新を拒否してHTTP 409を返します。すると `sync.js` は古い編集を「【競合コピー】」として別メモに保存します。**元のメモと編集した内容が両方残る理由が、この連携にあります。** ただし未検証の競合パターンもあるので、万能な自動マージではありません。
+
+### 4. Googleログイン・友達とのデータ分離
+
+`app.js` がGoogleログインに進むと、`worker/index.js` がGoogle OAuthを処理してセッションを発行します。APIが受け取るのはHttpOnly Cookieであり、画面のJavaScriptからセッショントークンを直接読む設計ではありません。サーバーはセッションから本人を特定し、D1への問い合わせにその `user.id` を必ず含めます。**同じCloudflareの無料枠を共有していても、メモの保存先はGoogleアカウント別**です。
+
+### 5. AI抽出・無料枠・PWAの連携
+
+- **AI：** `app.js` のAIボタン → `worker/index.js` → `worker/task-extraction.js` → Workers AI。候補を表示し、利用者が選んだものだけタスク化します。
+- **使用状況：** `app.js` → `worker/index.js` の管理者専用API → `worker/usage.js` → `public/quota.js`。取得失敗は「0」ではなく「未取得」にします。
+- **オフライン起動：** `public/sw.js` がHTML/CSS/JSをキャッシュします。**メモの同期処理とは別**であり、認証APIの返答はキャッシュしません。
+
+### 6. 勉強するときのおすすめ順
+
+1. `index.html` と `app.js` の `submitCapture()`・`addItem()` を見比べる
+2. `logic.js` の `createItem()`・`nextStatus()` を読んで、`test/logic.test.mjs` と比較する
+3. `sync.js` の `recordPut()`・`performFlush()`・`refresh()` を追う
+4. `worker/index.js` の `route()` と `schema.sql` を見比べる
+5. AIの `task-extraction.js`、無料枠の `usage.js`、PWAの `sw.js` を読む
+
+**注意：** `GOOGLE_CLIENT_SECRET` や `CF_ANALYTICS_TOKEN` などの秘密値はCloudflare WorkerのSecretsにのみ登録してください。コード・コメント・README・GitHubのIssueに貼らないでください。
 
 ## 全技術と選定理由
 

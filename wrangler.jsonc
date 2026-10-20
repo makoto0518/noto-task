@@ -1,6 +1,8 @@
-// Production-only Cloudflare bindings. Credentials go in Wrangler secrets,
-// never in this tracked file. Stay on Workers FREE (no paid deployment).
-// Replace the D1 database_id only after `wrangler d1 create noto-db`.
+// 【本番環境の接続設定】Workerの名前、D1、Workers AI、静的画面の場所をCloudflareへ伝える。
+// worker/index.jsのenv.DBとenv.AIは、下のbinding名で接続できる。
+// GOOGLE_CLIENT_SECRETやCF_ANALYTICS_TOKENは必ずCloudflareのSecretsへ保存する。
+// GitHubに置くこのファイルへ秘密値を貼らない。Workers Freeのまま運用する。
+// database_idは既に作成済みのD1を指すので、むやみに変更しない。
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "noto-task",
