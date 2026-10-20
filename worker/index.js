@@ -184,7 +184,7 @@ async function route(request,env){
     const item=normalizeItem(await bodyJson(request));if(!item)return fail('記録内容が不正です');
     const write=await env.DB.prepare('INSERT INTO items(id,user_id,kind,content,status,due_date,created_at,updated_at) SELECT ?,?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM account_epochs WHERE user_id=? AND epoch=?) ON CONFLICT(user_id,id) DO NOTHING')
       .bind(item.id,user.id,item.kind,item.content,item.status,item.dueDate,item.createdAt,item.updatedAt,user.id,epochRequest(request)??0).run();
-    if(!write.meta?.changes)return conflictResponse(await getItemRow(env.DB,user.id,item.id));
+    if(!write.meta?.changes){const fresh=await accountEpoch(env.DB,user.id);if(fresh!==(epochRequest(request)??0))return staleEpoch(fresh);return conflictResponse(await getItemRow(env.DB,user.id,item.id));}
     return ok({item},201);
   }
   const match=path.match(/^\/api\/items\/([\w-]{10,80})$/);
@@ -206,6 +206,7 @@ async function route(request,env){
       if(write.meta?.changes)return ok({item:{...item,updatedAt}});
     }
     // DB保存は成功したのに通信応答が消えた場合も、同じ内容なら再送成功として扱える。
+    const fresh=await accountEpoch(env.DB,user.id);if(fresh!==(epochRequest(request)??0))return staleEpoch(fresh);
     const current=await getItemRow(env.DB,user.id,item.id);
     if(current&&sameItemData(mapRow(current),item))return ok({item:mapRow(current)});
     return conflictResponse(current);
@@ -222,6 +223,7 @@ async function route(request,env){
     const write=await env.DB.prepare('DELETE FROM items WHERE user_id=? AND id=? AND updated_at=? AND EXISTS (SELECT 1 FROM account_epochs WHERE user_id=? AND epoch=?)')
       .bind(user.id,match[1],expected,user.id,epochRequest(request)??0).run();
     if(write.meta?.changes)return ok({ok:true});
+    const fresh=await accountEpoch(env.DB,user.id);if(fresh!==(epochRequest(request)??0))return staleEpoch(fresh);
     const current=await getItemRow(env.DB,user.id,match[1]);
     if(!current)return ok({ok:true}); // すでに削除済みなら、再送による削除も成功とみなす。
     return conflictResponse(current);
@@ -238,6 +240,7 @@ async function route(request,env){
     const write=await env.DB.prepare('UPDATE items SET content=?,status=?,due_date=?,updated_at=? WHERE user_id=? AND id=? AND updated_at=? AND EXISTS (SELECT 1 FROM account_epochs WHERE user_id=? AND epoch=?)')
       .bind(item.content,item.status,item.dueDate,updatedAt,user.id,match[1],data.expectedUpdatedAt,user.id,epochRequest(request)??0).run();
     if(write.meta?.changes)return ok({item:{...item,updatedAt}});
+    const fresh=await accountEpoch(env.DB,user.id);if(fresh!==(epochRequest(request)??0))return staleEpoch(fresh);
     const newest=await getItemRow(env.DB,user.id,match[1]);
     if(newest&&sameItemData(mapRow(newest),item))return ok({item:mapRow(newest)});
     return conflictResponse(newest);
