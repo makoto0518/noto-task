@@ -44,7 +44,7 @@ function quotaCard(def, metric) {
     status.textContent = '未取得'; used.textContent = '—';
     meter.setAttribute('aria-valuetext', '使用量を取得できません');
     bar.style.width = '0%';
-    foot.textContent = def.key === 'aiNeurons' ? 'NeuronsはCloudflare管理画面で確認してください。' : '閲覧用のCloudflare Analytics接続が必要です。';
+    foot.textContent = def.key === 'aiNeurons' ? 'Cloudflare Analyticsで取得できません。公式管理画面で確認してください。' : '閲覧用のCloudflare Analytics接続が必要です。';
   } else {
     const critical = result.percent >= 95, warning = result.percent >= 80;
     status.textContent = critical ? '残りわずか' : warning ? '注意' : '取得済み';
