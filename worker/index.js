@@ -162,9 +162,10 @@ async function route(request,env){
     const data=await bodyJson(request);
     if(data.confirm!=='DELETE ALL')return fail('削除確認が不足しています');
     // D1.batchは一括トランザクション。競合するときは更新を成立させず削除もしない。
+    const clearToken=crypto.randomUUID();
     const out=await env.DB.batch([
-      env.DB.prepare('UPDATE account_epochs SET epoch=epoch+1 WHERE user_id=? AND epoch=?').bind(user.id,expected),
-      env.DB.prepare('DELETE FROM items WHERE user_id=? AND EXISTS (SELECT 1 FROM account_epochs WHERE user_id=? AND epoch=?)').bind(user.id,user.id,expected+1),
+      env.DB.prepare('UPDATE account_epochs SET epoch=epoch+1,clear_token=? WHERE user_id=? AND epoch=?').bind(clearToken,user.id,expected),
+      env.DB.prepare('DELETE FROM items WHERE user_id=? AND EXISTS (SELECT 1 FROM account_epochs WHERE user_id=? AND epoch=? AND clear_token=?)').bind(user.id,user.id,expected+1,clearToken),
     ]);
     if(out[0].meta?.changes!==1)return staleEpoch(await accountEpoch(env.DB,user.id));
     return ok({ok:true,epoch:expected+1});
