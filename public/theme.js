@@ -1,7 +1,8 @@
 /**
- * This classic (non-module) script runs in <head> before the first paint.
- * Setting data-theme early prevents a flash of light UI in dark mode.
- * Explicit choice wins over prefers-color-scheme and is stored per device.
+ * 【初期テーマの設定】index.html の<head>で style.css より先に読み込む通常スクリプト。
+ * 初回描画前に data-theme を指定し、ダークモードでも一瞬白く光る現象を防ぐ。
+ * アプリ内で選んだテーマ（端末に保存）があれば、OSの自動設定より優先する。
+ * app.js の切替ボタンとも連携するため、読込順や保存キーを変更するときは注意。
  */
 (() => {
   let saved;
