@@ -28,3 +28,23 @@ test('two Google account IDs never overwrite each other, even with same item ID'
  assert.equal(d.prepare('SELECT content FROM items WHERE user_id=? AND id=?').get('bob',id).content,'秘密B');
  d.close();
 });
+
+test('全削除の世代更新は本人だけに作用し、古い書き込み条件では復活しない',()=>{
+ const d=db();const migration=readFileSync(new URL('../migrations/0001_account_epoch.sql',import.meta.url),'utf8');
+ d.prepare('INSERT INTO users(id,email) VALUES(?,?)').run('alice','a@example.com');
+ d.prepare('INSERT INTO users(id,email) VALUES(?,?)').run('bob','b@example.com');
+ d.exec(migration);
+ const before=d.prepare('SELECT epoch FROM account_epochs WHERE user_id=?').get('alice');
+ assert.equal(before.epoch,0);
+ const put=d.prepare("INSERT INTO items(id,user_id,kind,content,status,due_date,created_at,updated_at) SELECT ?,?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM account_epochs WHERE user_id=? AND epoch=?) ON CONFLICT(user_id,id) DO NOTHING");
+ assert.equal(put.run(id,'alice','note','昔の記録','todo',null,'2026-10-20T00:00:00Z','2026-10-20T00:00:00Z','alice',0).changes,1);
+ const other='b2222222-2222-4222-8222-222222222222';
+ assert.equal(put.run(other,'bob','note','友達の記録','todo',null,'2026-10-20T00:00:00Z','2026-10-20T00:00:00Z','bob',0).changes,1);
+ d.prepare('UPDATE account_epochs SET epoch=epoch+1,clear_token=? WHERE user_id=? AND epoch=?').run('nonce','alice',0);
+ d.prepare('DELETE FROM items WHERE user_id=? AND EXISTS (SELECT 1 FROM account_epochs WHERE user_id=? AND epoch=? AND clear_token=?)').run('alice','alice',1,'nonce');
+ assert.equal(d.prepare('SELECT count(*) AS n FROM items WHERE user_id=?').get('alice').n,0);
+ assert.equal(d.prepare('SELECT count(*) AS n FROM items WHERE user_id=?').get('bob').n,1);
+ assert.equal(put.run(id,'alice','note','復活させない','todo',null,'2026-10-20T00:00:00Z','2026-10-20T00:00:00Z','alice',0).changes,0);
+ assert.equal(put.run(id,'alice','note','復元として追加','todo',null,'2026-10-20T00:00:00Z','2026-10-20T00:00:00Z','alice',1).changes,1);
+ d.close();
+});
