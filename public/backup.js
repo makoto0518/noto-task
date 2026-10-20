@@ -1,7 +1,9 @@
 /**
- * JSON export of the current visible notebook snapshot.
- * It includes optimistic offline edits; no network request is necessary.
- * A download is not an automatic restoration or encrypted backup.
+ * 【バックアップ用データの作成】app.js の「JSONバックアップ」ボタンから使われる。
+ * 今端末に表示されているメモ・タスクをJSON（構造化したテキスト）にまとめる。
+ * オフライン中の未同期編集も対象で、クラウドとの通信は不要。
+ * safeItems() は logic.js にあり、壊れたデータを出力しないために利用する。
+ * 注意：本文やアカウントIDは暗号化されない。また復元機能はまだ実装していない。
  */
 import { safeItems } from './logic.js';
 
