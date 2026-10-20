@@ -197,18 +197,18 @@ export class CloudSync {
    * 全削除後の古い端末の未送信キューは再送できない。
    * 新しい世代を受け取ったら、キューとキャッシュを破棄して最新データに入れ替える。
    */
-  invalidateEpoch(epoch,remoteItems=[]){
+  invalidateEpoch(epoch,remoteItems=[],notify=true){
     if(!Number.isSafeInteger(epoch)||epoch<0)return;
     this.epoch=epoch;this.ready=true;this.epochMismatch=true;this.queue=[];this.version++;
     this.storage.setItem(epochKey(this.userId),String(epoch));
     this.items=safeItems(remoteItems);this.persistQueue();this.persistItems();this.publish();
-    this.status('synced');this.onConflict('別の端末で全記録が削除されたため、古い未同期変更を取り消しました');
+    this.status('synced');if(notify)this.onConflict('別の端末で全記録が削除されたため、古い未同期変更を取り消しました');
   }
   /**
    * 設定画面からの全削除後に呼ぶ。サーバーの新しい世代へ安全に切り替える。
    */
   clearLocal(epoch){
-    this.invalidateEpoch(epoch,[]);this.epochMismatch=false;
+    this.invalidateEpoch(epoch,[],false);this.epochMismatch=false;
   }
   async refresh() {
     if(!this.active||!this.userId)return;
