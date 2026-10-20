@@ -9,6 +9,7 @@ import { clampStatus, createItem, getCounts, getVisibleItems, nextStatus, safeIt
 import { CloudSync, cacheKey, queueKey } from './sync.js';
 import { renderQuotaPanel } from './quota.js';
 import { buildBackup, backupFilename } from './backup.js';
+import { previewBackup, makeRestoreItems } from './restore.js';
 
 // state は画面が今表示しているデータ（表示用の状態）。
 // 通信の完了を待たずに先に表示し、失敗時の再送は sync.js の CloudSync に任せる。
@@ -37,7 +38,7 @@ function errorMessage(error) { return error?.message || '通信に失敗しま�
 async function api(path, opts={}) {
   const response=await fetch('/api'+path,{ credentials:'same-origin', ...opts, headers:{'Content-Type':'application/json', ...(opts.headers||{})} });
   const json=await response.json().catch(()=>({}));
-  if(!response.ok) {const error=new Error(json.error || `通信エラー (${response.status})`);error.status=response.status;error.current=json.current??null;throw error;}
+  if(!response.ok) {const error=new Error(json.error || `通信エラー (${response.status})`);error.status=response.status;error.current=json.current??null;error.reason=json.reason??null;error.epoch=json.epoch??null;throw error;}
   return json;
 }
 function updateSync() {
@@ -357,6 +358,79 @@ async function fetchUsage() {
     $('quota-notice').textContent = errorMessage(error);
   } finally { $('usage-refresh').disabled = false; }
 }
+
+/**
+ * 【復元】バックアップの中身を確認し、既存のメモを上書きせず新しいIDで追加。
+ * app.js の addItem と違い、同じ内容の項目は取り込まない。
+ * クラウドへは sync.js が通常の新規メモと同じように送信する。
+ */
+let restoreCandidate=null;
+$('settings-restore').addEventListener('click',()=>{
+  if(state.loadingSession){toast('読み込みが終わってから操作してください');return;}
+  $('restore-file').value='';
+  $('restore-file').click();
+});
+$('restore-file').addEventListener('change',async()=>{
+  const file=$('restore-file').files?.[0];if(!file)return;
+  restoreCandidate=null;$('restore-preview').hidden=true;
+  try{
+    if(file.size>2_000_000)throw Error('2MB以下のバックアップを選んでください');
+    const snapshot=previewBackup(await file.text(),{accountId:state.user?.id??null});
+    if(snapshot.sourceAccount&&!state.user)throw Error('このファイルの復元にはGoogleログインが必要です');
+    restoreCandidate=snapshot;
+    const fresh=makeRestoreItems(snapshot.items,state.items);
+    $('restore-summary').textContent=`ファイルの記録 ${snapshot.items.length}件／追加予定 ${fresh.length}件（重複 ${snapshot.items.length-fresh.length}件）`;
+    $('restore-preview').hidden=false;
+  }catch(e){toast('復元できません: '+errorMessage(e));}
+});
+$('restore-cancel').addEventListener('click',()=>{$('restore-preview').hidden=true;restoreCandidate=null;});
+$('restore-confirm').addEventListener('click',()=>{
+  if(!restoreCandidate)return;
+  if(state.user&&(!cloudSync?.ready||cloudSync.queue.length)){toast('クラウド同期完了後に復元してください');return;}
+  const fresh=makeRestoreItems(restoreCandidate.items,state.items);
+  if(fresh.length>200){toast('一度に取り込めるのは200件までです');return;}
+  if(!fresh.length){toast('追加する新しい記録はありません');return;}
+  for(const item of fresh){
+    state.items=[item,...state.items];
+    if(state.user)cloudSync?.recordPut(item,state.items);
+  }
+  if(!state.user)persistGuest();
+  render();restoreCandidate=null;$('restore-preview').hidden=true;
+  toast(`${fresh.length}件を追加しました。クラウド同期の完了を確認してください`);
+});
+/**
+ * 【全削除】削除前の版（epoch）を必ず送信し、サーバーが本人のデータだけ削除する。
+ * 別端末の古い送信キューはsync.jsが世代不一致を検知して破棄する。
+ * 未同期編集があるときは削除操作を拒否する。先にバックアップして同期する。
+ */
+$('settings-clear').addEventListener('click',()=>{
+  $('clear-phrase').value='';
+  $('clear-panel').hidden=false;
+});
+$('clear-cancel').addEventListener('click',()=>{$('clear-panel').hidden=true;});
+$('clear-confirm').addEventListener('click',async()=>{
+  if($('clear-phrase').value.trim()!=='全削除'){toast('確認欄に「全削除」と入力してください');return;}
+  if(state.loadingSession){toast('読み込み完了後に操作してください');return;}
+  const button=$('clear-confirm');button.disabled=true;
+  try{
+    if(!state.user){
+      state.items=[];persistGuest();render();
+      localStorage.removeItem(draftKey);$('capture-input').value='';$('add-btn').disabled=true;
+      $('clear-panel').hidden=true;toast('この端末のゲスト記録を削除しました');return;
+    }
+    if(!navigator.onLine)throw Error('オンラインで実行してください');
+    await cloudSync.syncNow();
+    if(cloudSync.queue.length||!cloudSync.ready)throw Error('未同期の変更があります。同期完了後に削除してください');
+    const out=await api('/items/clear',{method:'POST',headers:{'X-Noto-Epoch':String(cloudSync.epoch)},body:JSON.stringify({confirm:'DELETE ALL'})});
+    cloudSync.clearLocal(out.epoch);
+    state.items=[];localStorage.removeItem(draftKey);$('capture-input').value='';$('add-btn').disabled=true;
+    render();$('clear-panel').hidden=true;
+    toast('記録をすべて削除しました');
+  }catch(e){
+    toast('削除できません: '+errorMessage(e));
+    if(e.reason==='epoch_changed')cloudSync?.invalidateEpoch(e.epoch);
+  }finally{button.disabled=false;}
+});
 
 $('theme-toggle').addEventListener('click',toggleTheme);
 $('settings-btn').addEventListener('click',()=>navigate('settings'));
