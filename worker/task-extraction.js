@@ -1,8 +1,9 @@
 /**
- * Ground AI task suggestions in a verbatim excerpt of the user's note.
- * Returning the exact quote (instead of a freely generated title) stops
- * semantically unrelated or garbled Japanese from entering the task list.
- * No extra AI call, paid API, or storage required.
+ * 【AIの出力を信用しすぎない仕組み】worker/index.jsのhandleAI()から呼ぶ。
+ * モデルには原文に存在する文章を抜き出すよう指示し、その結果をさらに検査する。
+ * 原文に一字一句存在しない候補を除外することで、意味不明な日本語の混入を減らす。
+ * 課題：原文そのままなので「掃除したい」のような表現は自然な命令形に直さない。
+ * AI APIを追加で呼ばないので、Neuronsも余計に消費しない。
  */
 export const TASK_MODEL='@cf/google/gemma-4-26b-a4b-it';
 
@@ -29,7 +30,8 @@ function responseText(result){
 function parseJsonFragment(text){
   const clean=text.trim().replace(/^\x60\x60\x60(?:json)?\s*/i,'').replace(/\s*\x60\x60\x60$/,'');
   try{return JSON.parse(clean);}catch{}
-  // Some models add short chatter despite instructions; select first JSON object.
+  // 指示に反してモデルが説明文を付ける場合があるため、JSON部分を取り出して解析を試みる。
+  // 解析できなかった場合は勝手なタスクを作らず、候補なしにする。
   const start=clean.indexOf('{'),end=clean.lastIndexOf('}');
   if(start!==-1&&end>start){
     try{return JSON.parse(clean.slice(start,end+1));}catch{}
