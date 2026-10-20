@@ -1,4 +1,5 @@
-# Static asset security headers. API sends no-store JSON separately.
+# 公開するHTML/CSS/JSに付けるセキュリティ用HTTPヘッダー。
+# /api/*のJSON応答のキャッシュ制御はworker/index.jsが別に担当する。
 /*
   X-Content-Type-Options: nosniff
   Referrer-Policy: strict-origin-when-cross-origin
