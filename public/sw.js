@@ -1,7 +1,9 @@
 /**
- * Offline-first shell, not an offline database: API requests are NEVER cached.
- * This separation avoids accidentally replaying stale Google/session data.
- * Bump CACHE whenever changing essential static assets.
+ * 【Service Worker：オフライン起動の仕組み】ブラウザとは別に動くWeb標準の処理。
+ * index.html・style.css・app.js などをキャッシュし、通信がなくても画面を開ける。
+ * メモ・タスクの保存は sync.js（端末）と worker/index.js + D1（クラウド）が担当。
+ * /api/ の応答は絶対にキャッシュしない。別アカウントのデータや古い認証情報を
+ * 端末に誤って再表示しないため。静的ファイルを更新したらCACHEの版も変更する。
  */
 const CACHE='noto-static-v12';
 const SHELL=['/','/index.html','/style.css','/app.js','/logic.js','/backup.js','/sync.js','/quota.js','/theme.js','/icon.svg','/manifest.webmanifest'];
