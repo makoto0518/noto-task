@@ -7,7 +7,7 @@
   <meta name="description" content="メモとタスクをすぐに記録。" />
   <link rel="manifest" href="/manifest.webmanifest" />
   <link rel="icon" href="/icon.svg" type="image/svg+xml" />
-  <!-- Apply selected theme before CSS paints; prevents a light-mode flash. -->
+  <!-- theme.jsをCSS描画前に実行。ダークモード時に一瞬白く光るのを防ぐ。詳細は theme.js。 -->
   <script src="/theme.js"></script>
   <link rel="stylesheet" href="/style.css" />
   <title>noto. — メモとタスク</title>
@@ -18,7 +18,7 @@
   <div class="ambient ambient-two" aria-hidden="true"></div>
   <div class="ambient ambient-three" aria-hidden="true"></div>
 
-  <!-- Accessible full-screen loading placeholder; removed once input is ready. -->
+  <!-- 読込中の仮画面。app.jsのinitialize()で入力できる状態になったら取り除く。 -->
   <div id="skeleton" class="skeleton-screen" aria-label="読み込み中" role="status">
     <div class="sk-shell">
       <div class="sk-top"><div class="sk-block sk-logo"></div><div class="sk-block sk-avatar"></div></div>
@@ -52,7 +52,7 @@
         <p class="intro-detail" id="summary-line">タスク 0件 ・ メモ 0件</p>
       </div>
 
-      <!-- Main interaction lives above the list: capture should never require navigation. -->
+      <!-- メモ入力は一覧の上に配置。画面を移動せずすぐ入力できるのがnoto.の基本設計。 -->
       <section class="capture-panel glass fade-up" aria-labelledby="capture-title">
         <div class="capture-topline"><div class="section-eyebrow"><span class="capture-sun">✳</span> <span id="capture-title">クイックキャプチャ</span></div><div class="key-hint">⌘ / Ctrl + Enter</div></div>
         <textarea id="capture-input" aria-label="メモやタスクを入力" rows="2" maxlength="4000" placeholder="ここにメモを書く…" spellcheck="true"></textarea>
@@ -76,7 +76,7 @@
       
     </main>
 
-    <!-- Hash-based views preserve the current note draft and work offline in the PWA. -->
+    <!-- #/settings等のURLで画面を切り替え、入力中の下書きを維持。app.jsのdisplayView()と連携。 -->
     <main id="settings-view" class="page subpage" hidden aria-labelledby="settings-title">
       <button class="back-link press-scale" id="settings-back" type="button">← 戻る</button>
       <div class="subpage-eyebrow">SETTINGS</div>
@@ -111,7 +111,7 @@
   </div>
 
   <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
-  <!-- In-place edit sheet also exposes opt-in AI task extraction for notes. -->
+  <!-- メモ編集画面には利用者が明示的に押すAI抽出ボタンを置く。app.jsのrunAI()に対応。 -->
   <div id="dialog-backdrop" class="dialog-backdrop" hidden>
     <div class="dialog glass" role="dialog" aria-modal="true" aria-labelledby="dialog-title">
       <div class="dialog-handle"></div><div class="dialog-heading"><h2 id="dialog-title">編集</h2><button type="button" id="dialog-close" aria-label="閉じる" class="dialog-x">×</button></div>
