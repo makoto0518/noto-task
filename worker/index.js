@@ -1,11 +1,12 @@
 import { TASK_MODEL, TASK_MESSAGES, groundedTaskSuggestions } from './task-extraction.js';
 import { getAnalyticsMetrics } from './usage.js';
 /**
- * Cloudflare Worker: all authenticated API routes are same-origin (/api/*).
- * D1 SQL queries bind parameters (never concatenate user input into SQL).
- * Authentication: Google OAuth authorization code + PKCE -> server session;
- * session token is HttpOnly cookie and only SHA-256 digest resides in D1.
- * This module imports no paid services and works on Cloudflare Workers Free.
+ * 【サーバーの入口】app.js / sync.js からの /api/* リクエストを処理するCloudflare Worker。
+ * 役割：Google認証、本人確認、メモのD1保存、AI呼び出し、利用状況の取得。
+ * schema.sql がD1のテーブル構造を定義し、wrangler.jsonc がDB/AIを接続する。
+ * SQLはbind()に値を渡し、文字列を直接連結しない（SQLインジェクションを防ぐ）。
+ * セッションCookieはHttpOnly。D1にはトークンそのものではなくSHA-256ハッシュを保存。
+ * Workers Free内で動かすため、ここから有料APIを直接呼び出さない。
  */
 const SESSION_SECONDS=60*60*24*30;
 const statusValues=new Set(['todo','doing','done']);
@@ -20,11 +21,14 @@ function cookie(key,value,options={}){const params=[`${key}=${encodeURIComponent
 function originOf(request,env){return env.APP_ORIGIN||new URL(request.url).origin;}
 function isSecure(request,env){return originOf(request,env).startsWith('https://');}
 function isMutating(method){return !['GET','HEAD','OPTIONS'].includes(method);}
-// Same-origin mutation guard supplements SameSite=Lax cookie CSRF protection.
+// POST/PUT/DELETEなどは同じサイトからの要求だけ許す。CookieのSameSite属性に加えるCSRF対策。
 function allowedWrite(request,env){const origin=request.headers.get('Origin');return Boolean(origin&&origin===originOf(request,env));}
 async function bodyJson(request){const length=Number(request.headers.get('Content-Length')||0);if(length>12000)throw new Error('入力が長すぎます');const raw=await request.text();if(raw.length>12000)throw new Error('入力が長すぎます');try{return JSON.parse(raw);}catch{throw new Error('JSONが不正です');}}
 async function getSession(request,env){const token=cookieMap(request.headers.get('Cookie')).mizu_session;if(!token||!env.DB)return null;const digest=await sha256(token);const row=await env.DB.prepare('SELECT u.id,u.email,u.name,u.avatar_url FROM sessions s JOIN users u ON s.user_id=u.id WHERE s.token_hash=? AND s.expires_at>?').bind(digest,Math.floor(Date.now()/1000)).first();return row?{id:row.id,email:row.email,name:row.name,avatarUrl:row.avatar_url}:null;}
-/** Normalize untrusted JSON before writing it to the database. */
+/**
+ * 【保存前の入力チェック】ブラウザから届くJSONが正しい種類・文字数・日付か確認する。
+ * UI側 logic.js の safeItems() だけでは不十分。APIは直接呼べるためサーバーでも検証する。
+ */
 function normalizeItem(data,{patch=false}={}){
   if(!data||typeof data!=='object'||!['note','task'].includes(data.kind)||typeof data.id!=='string'||!/^[\w-]{10,80}$/.test(data.id))return null;
   if(typeof data.content!=='string'||!data.content.trim()||data.content.length>4000)return null;
@@ -34,13 +38,22 @@ function normalizeItem(data,{patch=false}={}){
   return {id:data.id,kind:data.kind,content:data.content.trim(),status:data.kind==='note'?'todo':statusValues.has(data.status)?data.status:'todo',dueDate,createdAt,updatedAt:new Date().toISOString()};
 }
 function mapRow(row){return {id:row.id,kind:row.kind,content:row.content,status:row.status,dueDate:row.due_date,createdAt:row.created_at,updatedAt:row.updated_at};}
-/** Conditional writes detect stale edits without requiring a D1 schema change. */
+/**
+ * 【競合を防ぐ版管理】既存の updated_at（最終更新日時）を「版」として照合する。
+ * sync.js が送った expectedUpdatedAt とD1の値が一致する場合だけUPDATE/DELETE。
+ * 別端末が先に編集していたら409を返し、sync.js が競合コピーを保存する。
+ * 新しいDB列を増やさず既存 schema.sql の設計を利用できる。
+ */
 function validExpectedRevision(value){return value===null||(typeof value==='string'&&value.length<=64&&!Number.isNaN(Date.parse(value)));}
 function nextRevision(previous){const old=Date.parse(previous);return new Date(Math.max(Date.now(),Number.isFinite(old)?old+1:0)).toISOString();}
 async function getItemRow(db,userId,id){return db.prepare('SELECT id,kind,content,status,due_date,created_at,updated_at FROM items WHERE user_id=? AND id=?').bind(userId,id).first();}
 function sameItemData(a,b){return a.kind===b.kind&&a.content===b.content&&a.status===b.status&&a.dueDate===b.dueDate;}
 function conflictResponse(row){return Response.json({error:'別の端末で更新されています',current:row?mapRow(row):null},{status:409,headers:{'Cache-Control':'no-store'}});}
-/** OAuth redirect: random state prevents CSRF, PKCE challenge binds the callback. */
+/**
+ * 【Googleログイン開始】Google認証画面へ移動するURLを作る。
+ * stateは偽のログイン結果の混入を防ぎ、PKCEは認証コードの横取り対策となる。
+ * Google Cloudに登録したリダイレクト先 /api/auth/callback へ戻す仕組み。
+ */
 async function beginGoogle(request,env){
   if(!env.GOOGLE_CLIENT_ID||!env.GOOGLE_CLIENT_SECRET)return fail('Google OAuthの設定が必要です',503);
   const state=randomString(),verifier=randomString(64);const challenge=await sha256(verifier);
@@ -51,7 +64,11 @@ async function beginGoogle(request,env){
   headers.append('Set-Cookie',cookie('mizu_pkce',verifier,{maxAge:600,secure:isSecure(request,env)}));
   return new Response(null,{status:302,headers});
 }
-/** Exchange code on server; profile comes from Google userinfo, not the browser. */
+/**
+ * 【Googleからの戻り先】受け取った認証コードをサーバー側でトークンと交換する。
+ * プロフィールはGoogleのuserinfoから取得し、ブラウザが送った名前は信用しない。
+ * users/sessionsテーブルはschema.sqlで定義。アプリにはHttpOnly Cookieを返す。
+ */
 async function googleCallback(request,env){
   const url=new URL(request.url);const givenState=url.searchParams.get('state');const code=url.searchParams.get('code');const cookies=cookieMap(request.headers.get('Cookie'));
   if(!givenState||!code||givenState!==cookies.mizu_oauth_state||!cookies.mizu_pkce)return fail('Google認証を確認できませんでした',401);
@@ -72,9 +89,11 @@ async function googleCallback(request,env){
   return new Response(null,{status:302,headers});
 }
 /**
- * AI runs only after explicit user action. We cap each user at 20/day to
- * protect the shared FREE-tier neuron allocation; model output is untrusted.
- * The 20/day cap is NOT a guaranteed global cloud cost/quota ceiling.
+ * 【AIタスク抽出】app.js のAIボタンから届いたメモだけを解析する。
+ * task-extraction.js がモデルへの指示を作り、原文にない提案を除外する。
+ * ai_usageテーブルでGoogleユーザーごとに1日20回まで許可する。
+ * ただしCloudflareのNeurons無料枠はアカウント全員の共有分。
+ * 「各自20回まで」はアカウント全体の消費を保証する上限ではない。
  */
 async function handleAI(request,env,user){
   if(!env.AI)return fail('Workers AIが設定されていません',503);
@@ -89,7 +108,12 @@ async function handleAI(request,env,user){
   const tasks=groundedTaskSuggestions(result,data.text);
   return ok({tasks});
 }
-/** Central router; every item query is scoped to session.user.id. */
+/**
+ * 【APIの道案内】URLとHTTPメソッド（GET/PUT/DELETEなど）を見て処理を振り分ける。
+ * メモ取得・更新は必ずログイン中の user.id でD1の対象を絞る。
+ * これは友達のGoogleアカウントのデータにアクセスできないようにする基本の仕組み。
+ * /api/usage はOWNER_GOOGLE_SUBが一致する管理者だけ許可する。
+ */
 async function route(request,env){
   const url=new URL(request.url);const path=url.pathname;
   if(!path.startsWith('/api/'))return new Response('Not found',{status:404});
@@ -100,8 +124,8 @@ async function route(request,env){
   const user=await getSession(request,env);
   if(path==='/api/session'&&request.method==='GET')return ok({authenticated:Boolean(user),user});
   if(!user)return fail('Googleログインが必要です',401);
-  // Only the explicitly configured owner can see account-wide billing analytics.
-  // Ordinary Google users must NOT be able to fetch Cloudflare account data.
+  // Cloudflareアカウント全体の利用状況は管理者だけに表示する。
+  // 友達など一般利用者はCloudflareの利用量やトークンにアクセスできないようにする。
   if(path==='/api/usage'&&request.method==='GET'){
     if(!env.OWNER_GOOGLE_SUB || user.id !== env.OWNER_GOOGLE_SUB)return fail('利用状況は管理者のみ確認できます',403);
     const today=new Date().toISOString().slice(0,10);
@@ -109,7 +133,7 @@ async function route(request,env){
     try {
       const row=await env.DB.prepare('SELECT calls FROM ai_usage WHERE user_id=? AND day=?').bind(user.id,today).first();
       aiCalls={used:Math.max(0,Number(row?.calls||0)),limit:20};
-    }catch{/* Older DB / temporary query failure must not hide the whole page. */}
+    }catch{/* 一時的にAI回数を読めなくても、無料枠画面全体の取得を止めない。 */}
     const result=await getAnalyticsMetrics(env);
     return ok({...result,aiCalls,message:result.configured
       ? 'Cloudflareのアカウント全体の集計です。反映遅延や計測方法の違いがあるため請求の確定値ではありません。'
@@ -132,7 +156,8 @@ async function route(request,env){
     return ok({item},201);
   }
   const match=path.match(/^\/api\/items\/([\w-]{10,80})$/);
-  // No schema migration: use the existing updated_at column for atomic compare-and-swap.
+  // updated_atを条件に含むSQLで、版が一致したときだけ更新する（楽観的ロック）。
+  // 同時編集があっても「先に書いた内容を黙って上書き」しないため。
   if(match&&request.method==='PUT'){
     const data=await bodyJson(request);
     if(!Object.hasOwn(data,'expectedUpdatedAt')||!validExpectedRevision(data.expectedUpdatedAt))return fail('更新前の版情報が必要です',428);
@@ -148,7 +173,7 @@ async function route(request,env){
         .bind(item.content,item.status,item.dueDate,updatedAt,user.id,item.id,item.kind,expected).run();
       if(write.meta?.changes)return ok({item:{...item,updatedAt}});
     }
-    // A lost response after a successful write can be safely acknowledged.
+    // DB保存は成功したのに通信応答が消えた場合も、同じ内容なら再送成功として扱える。
     const current=await getItemRow(env.DB,user.id,item.id);
     if(current&&sameItemData(mapRow(current),item))return ok({item:mapRow(current)});
     return conflictResponse(current);
@@ -156,8 +181,9 @@ async function route(request,env){
   if(match&&request.method==='DELETE'){
     const expected=request.headers.get('If-Match');
     if(typeof expected!=='string'||!validExpectedRevision(expected)){
-      // A legacy outbox has no revision. Never execute its deletion, but return
-      // 409 instead of 428 so the client can reconcile and unblock its queue.
+      // 旧版から残ったDELETEには版情報がないことがある。
+      // 無条件に削除せず409を返し、sync.jsが安全にキューを整理できるようにする。
+      // 以前428が繰り返されて同期が止まった不具合への互換対応。
       const current=await getItemRow(env.DB,user.id,match[1]);
       return Response.json({error:'版情報のない古い削除要求を安全のため中止しました',reason:'legacy_delete',current:current?mapRow(current):null},{status:409,headers:{'Cache-Control':'no-store'}});
     }
@@ -165,10 +191,10 @@ async function route(request,env){
       .bind(user.id,match[1],expected).run();
     if(write.meta?.changes)return ok({ok:true});
     const current=await getItemRow(env.DB,user.id,match[1]);
-    if(!current)return ok({ok:true}); // Retry after a committed delete.
+    if(!current)return ok({ok:true}); // すでに削除済みなら、再送による削除も成功とみなす。
     return conflictResponse(current);
   }
-  // Older PATCH clients must also send a revision precondition, not bypass protection.
+  // 旧版のPATCH経路でも版情報を必須にし、PUTと同じ競合保護を迂回できなくする。
   if(match&&request.method==='PATCH'){
     const data=await bodyJson(request);
     if(!Object.hasOwn(data,'expectedUpdatedAt')||!validExpectedRevision(data.expectedUpdatedAt)||data.expectedUpdatedAt===null)return fail('更新前の版情報が必要です',428);
