@@ -16,5 +16,25 @@ test('empty, short and duplicate suggestions filtered',()=>{
 });
 test('model uses restricted task extraction prompt',()=>{
  assert.match(TASK_MODEL,/gemma/);
- assert.match(TASK_MESSAGES(note)[0].content,/完全一致/);
+ assert.match(TASK_MESSAGES(note)[0].content,/一字一句/);
+});
+
+test('友達の報告: 複数行動を自然な独立タスクとして受け入れる',()=>{
+ const text='自炊して散歩して風呂入る';
+ const response={response:JSON.stringify({tasks:[
+ {quote:'自炊して',title:'自炊する'},
+ {quote:'散歩して',title:'散歩する'},
+ {quote:'風呂入る',title:'お風呂に入る'}]})};
+ assert.deepEqual(groundedTaskSuggestions(response,text).map(x=>x.title),['自炊する','散歩する','お風呂に入る']);
+});
+test('原文にない捏造された行動や根拠をそのまま受け付けない',()=>{
+ const text='大学の課題と就活の面接対策を行う';
+ const response={response:JSON.stringify({tasks:[
+ {quote:'大学の課題',title:'大学の課題に取り組む'},
+ {quote:'書類を提出',title:'書類を提出する'},
+ {quote:'就活の面接対策',title:'面接対策をする'}]})};
+ const titles=groundedTaskSuggestions(response,text).map(x=>x.title);
+ assert.equal(titles.length,2);
+ assert.ok(titles.includes('大学の課題に取り組む'));
+ assert.ok(!titles.includes('書類を提出する'));
 });
