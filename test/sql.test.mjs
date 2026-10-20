@@ -1,4 +1,4 @@
-// Exercise the same SQLite syntax D1 executes, without claiming a live D1 connection.
+// D1互換のSQLite文法をローカルで確認する。Cloudflare本番D1への接続テストと混同しない。
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
