@@ -14,6 +14,7 @@ import { safeItems } from './logic.js';
  * サーバー側でも worker/index.js の user.id で必ず利用者を絞り込む。
  */
 export const cacheKey = userId => `mizu_account_${encodeURIComponent(userId)}_items_v2`;
+export const epochKey = userId => `mizu_account_${encodeURIComponent(userId)}_epoch_v1`;
 export const queueKey = userId => `mizu_account_${encodeURIComponent(userId)}_queue_v2`;
 export function parseStored(storage, key, fallback = []) {
   try { const value = JSON.parse(storage.getItem(key) || 'null'); return Array.isArray(value) ? value : fallback; }
@@ -53,6 +54,7 @@ export class CloudSync {
     this.onStatus=onStatus; this.onConflict=onConflict; this.guestKey=guestKey;
     this.userId=null; this.items=[]; this.queue=[]; this.active=true;
     this.flushing=null; this.refreshing=null; this.version=0;
+    this.epoch=0;this.ready=false;this.epochMismatch=false;
   }
   status(label) { if(this.active) this.onStatus(label, this.queue.length); }
   persistQueue() { this.storage.setItem(queueKey(this.userId),JSON.stringify(this.queue)); }
@@ -65,6 +67,9 @@ export class CloudSync {
    */
   activate(userId, guestItems=[]) {
     this.userId=userId;
+    this.epoch=Number(this.storage.getItem(epochKey(userId))||0);
+    if(!Number.isSafeInteger(this.epoch)||this.epoch<0)this.epoch=0;
+    this.ready=this.epoch>0;this.epochMismatch=false;
     this.queue=validQueue(parseStored(this.storage,queueKey(userId)));
     this.items=mergeServerItems(parseStored(this.storage,cacheKey(userId)),this.queue);
     const known=new Set(this.items.map(x=>x.id));
@@ -114,6 +119,7 @@ export class CloudSync {
   }
   async flush() {
     if(!this.active||!this.userId)return;
+    if(!this.ready){await this.refresh();if(!this.ready)return;}
     if(this.flushing)return this.flushing;
     const startVersion=this.version;
     this.flushing=this.performFlush();
@@ -137,8 +143,8 @@ export class CloudSync {
       this.status('syncing');
       try {
         const result=op.type==='delete'
-          ? await this.request(`/items/${encodeURIComponent(op.id)}`,{method:'DELETE',headers:{'If-Match':op.expectedUpdatedAt||''}})
-          : await this.request(`/items/${encodeURIComponent(op.id)}`,{method:'PUT',body:JSON.stringify({...op.item,expectedUpdatedAt:op.expectedUpdatedAt??null})});
+          ? await this.request(`/items/${encodeURIComponent(op.id)}`,{method:'DELETE',headers:{'If-Match':op.expectedUpdatedAt||'','X-Noto-Epoch':String(this.epoch)}})
+          : await this.request(`/items/${encodeURIComponent(op.id)}`,{method:'PUT',headers:{'X-Noto-Epoch':String(this.epoch)},body:JSON.stringify({...op.item,expectedUpdatedAt:op.expectedUpdatedAt??null})});
         if(!this.active)return;
         const index=this.queue.findIndex(entry=>entry.id===op.id);
         if(index>=0&&this.queue[index]===op){
@@ -155,6 +161,10 @@ export class CloudSync {
           this.persistQueue();
         }
       } catch(error) {
+        if(error?.reason==='epoch_changed'){
+          this.invalidateEpoch(error.epoch);
+          return;
+        }
         if(error?.status!==409){this.status('pending');return;}
         // 別端末で更新されていても、今回の編集内容を捨てず「【競合コピー】」として保存する。
         // 元メモはサーバーの最新版を採用し、利用者が後から両方を見比べられるようにする。
@@ -183,6 +193,23 @@ export class CloudSync {
    * 古い応答で端末内の未同期変更を上書きしないための version チェック。
    * app.js の「同期」ボタンや25秒ごとの同期からも呼ばれる。
    */
+  /**
+   * 全削除後の古い端末の未送信キューは再送できない。
+   * 新しい世代を受け取ったら、キューとキャッシュを破棄して最新データに入れ替える。
+   */
+  invalidateEpoch(epoch,remoteItems=[],notify=true){
+    if(!Number.isSafeInteger(epoch)||epoch<this.epoch)return;
+    this.epoch=epoch;this.ready=true;this.epochMismatch=true;this.queue=[];this.version++;
+    this.storage.setItem(epochKey(this.userId),String(epoch));
+    this.items=safeItems(remoteItems);this.persistQueue();this.persistItems();this.publish();
+    this.status('synced');if(notify)this.onConflict('別の端末で全記録が削除されたため、古い未同期変更を取り消しました');
+  }
+  /**
+   * 設定画面からの全削除後に呼ぶ。サーバーの新しい世代へ安全に切り替える。
+   */
+  clearLocal(epoch){
+    this.invalidateEpoch(epoch,[],false);this.epochMismatch=false;
+  }
   async refresh() {
     if(!this.active||!this.userId)return;
     if(this.flushing && this.flushing!==this.refreshing && this.queue.length)return;
@@ -192,6 +219,14 @@ export class CloudSync {
       try {
         const response=await this.request('/items');
         if(!this.active||this.version!==atVersion)return;
+        // 古い通信応答で世代を巻き戻さない（全削除後の復活対策）。
+        if(Number.isSafeInteger(response.epoch)&&response.epoch<this.epoch)return;
+        if(Number.isSafeInteger(response.epoch)&&response.epoch!==this.epoch){
+          this.invalidateEpoch(response.epoch,response.items||[]);
+          this.epochMismatch=false;return;
+        }
+        this.ready=true;
+        this.storage.setItem(epochKey(this.userId),String(this.epoch));
         this.items=mergeServerItems(response.items||[],this.queue);
         this.persistItems();this.publish();
         this.status(this.queue.length?'pending':'synced');

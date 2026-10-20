@@ -5,8 +5,8 @@
  * /api/ の応答は絶対にキャッシュしない。別アカウントのデータや古い認証情報を
  * 端末に誤って再表示しないため。静的ファイルを更新したらCACHEの版も変更する。
  */
-const CACHE='noto-static-v12';
-const SHELL=['/','/index.html','/style.css','/app.js','/logic.js','/backup.js','/sync.js','/quota.js','/theme.js','/icon.svg','/manifest.webmanifest'];
+const CACHE='noto-static-v13';
+const SHELL=['/','/index.html','/style.css','/app.js','/logic.js','/backup.js','/restore.js','/sync.js','/quota.js','/theme.js','/icon.svg','/manifest.webmanifest'];
 self.addEventListener('install',event=>event.waitUntil(caches.open(CACHE).then(cache=>cache.addAll(SHELL)).then(()=>self.skipWaiting())));
 self.addEventListener('activate',event=>event.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(key=>key!==CACHE).map(key=>caches.delete(key)))).then(()=>self.clients.claim())));
 self.addEventListener('fetch',event=>{

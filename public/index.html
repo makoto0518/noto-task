@@ -87,7 +87,27 @@
       <button id="settings-backup" class="settings-entry glass" type="button" aria-label="メモとタスクのJSONバックアップを保存する">
         <span class="settings-entry-icon">↓</span><span class="settings-entry-text"><strong>JSONバックアップ</strong><small>端末のメモ・タスクをファイルに保存（未同期を含む）</small></span><span class="settings-entry-arrow">›</span>
       </button>
-      <div class="settings-note">バックアップにはメモ本文が平文で入ります。保存したファイルは他人と共有しないでください。バックアップの読み込み・復元にはまだ対応していません。</div>
+      <button id="settings-restore" class="settings-entry glass" type="button">
+        <span class="settings-entry-icon">↑</span><span class="settings-entry-text"><strong>JSONバックアップを復元</strong><small>内容を確認してから追加・既存データは上書きしません</small></span><span class="settings-entry-arrow">›</span>
+      </button>
+      <input id="restore-file" type="file" accept=".json,application/json" hidden />
+      <div id="restore-preview" class="settings-action-panel glass" hidden>
+        <strong>復元の確認</strong>
+        <p id="restore-summary"></p>
+        <p>同じ内容の記録はスキップし、新しいIDで追加します。元の作成日時は復元時刻になります。</p>
+        <div class="settings-action-row"><button id="restore-cancel" type="button">キャンセル</button><button id="restore-confirm" type="button">確認して追加</button></div>
+      </div>
+      <div class="settings-note">JSONバックアップにはメモ本文が平文で入ります。ファイルを他人と共有しないでください。</div>
+      <button id="settings-clear" class="settings-entry glass" type="button">
+        <span class="settings-entry-icon">×</span><span class="settings-entry-text"><strong>すべての記録を削除</strong><small>このGoogleアカウントのメモとタスクだけを完全削除</small></span><span class="settings-entry-arrow">›</span>
+      </button>
+      <div id="clear-panel" class="settings-action-panel glass" hidden>
+        <strong>全記録を削除しますか？</strong>
+        <p>復元できない操作です。先にJSONバックアップを保存してください。ほかの端末にある未同期の変更も取り消されます。友達のデータは削除されません。</p>
+        <label for="clear-phrase">確認のため「全削除」と入力してください</label>
+        <input id="clear-phrase" type="text" autocomplete="off" />
+        <div class="settings-action-row"><button id="clear-cancel" type="button">キャンセル</button><button id="clear-confirm" type="button" class="danger-btn">完全に削除</button></div>
+      </div>
       <div class="settings-note">Cloudflare Freeプランで運用。使用量は必要なときだけ確認できます。</div>
     </main>
 

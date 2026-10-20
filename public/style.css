@@ -121,3 +121,15 @@
 
 /* 無料枠ボタンとバックアップボタンを区別しつつ、既存のGlassデザインは保つ。 */
 #settings-backup{margin-top:14px}
+
+/* 復元と完全削除：普段の設定と見分けられる確認パネル。 */
+#settings-restore,#settings-clear{margin-top:14px}
+#settings-clear .settings-entry-icon{background:rgba(218,93,93,.13);color:#bd5360}
+.settings-action-panel{margin-top:12px;border-radius:20px;border:1px solid var(--line);padding:18px 20px;display:grid;gap:10px;color:var(--navy)}
+.settings-action-panel p{margin:0;font-size:12px;line-height:1.7;color:var(--muted)}
+.settings-action-panel label{font-size:13px;font-weight:700}
+.settings-action-panel input{min-height:40px;border-radius:12px;border:1px solid var(--line);padding:9px;background:var(--glass);color:var(--navy)}
+.settings-action-row{display:flex;justify-content:flex-end;gap:10px;flex-wrap:wrap}
+.settings-action-row button{border-radius:12px;padding:10px 14px;border:1px solid var(--line);background:rgba(160,184,217,.14);color:var(--navy);font-weight:700}
+.settings-action-row .danger-btn{background:#c65464;color:white}
+[data-theme="dark"] .settings-action-panel{color:#e7efff}

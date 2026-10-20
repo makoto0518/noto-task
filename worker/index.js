@@ -46,6 +46,14 @@ function mapRow(row){return {id:row.id,kind:row.kind,content:row.content,status:
  */
 function validExpectedRevision(value){return value===null||(typeof value==='string'&&value.length<=64&&!Number.isNaN(Date.parse(value)));}
 function nextRevision(previous){const old=Date.parse(previous);return new Date(Math.max(Date.now(),Number.isFinite(old)?old+1:0)).toISOString();}
+// 全削除後に古い端末が再送しても復活しないよう、ユーザーごとに世代番号を確認する。
+async function accountEpoch(db,id){
+ await db.prepare('INSERT OR IGNORE INTO account_epochs(user_id,epoch) VALUES(?,0)').bind(id).run();
+ const row=await db.prepare('SELECT epoch FROM account_epochs WHERE user_id=?').bind(id).first();
+ return Number(row.epoch);
+}
+function epochRequest(request){const value=request.headers.get('X-Noto-Epoch');return value!==null&&/^(0|[1-9]\\d*)$/.test(value)?Number(value):null;}
+function staleEpoch(epoch){return Response.json({error:'別の端末で全記録が削除されました。古い変更は送信できません。',reason:'epoch_changed',epoch},{status:409,headers:{'Cache-Control':'no-store'}});}
 async function getItemRow(db,userId,id){return db.prepare('SELECT id,kind,content,status,due_date,created_at,updated_at FROM items WHERE user_id=? AND id=?').bind(userId,id).first();}
 function sameItemData(a,b){return a.kind===b.kind&&a.content===b.content&&a.status===b.status&&a.dueDate===b.dueDate;}
 function conflictResponse(row){return Response.json({error:'別の端末で更新されています',current:row?mapRow(row):null},{status:409,headers:{'Cache-Control':'no-store'}});}
@@ -144,15 +152,39 @@ async function route(request,env){
     if(token)await env.DB.prepare('DELETE FROM sessions WHERE token_hash=?').bind(await sha256(token)).run();
     return new Response(JSON.stringify({ok:true}),{status:200,headers:{'Content-Type':'application/json','Cache-Control':'no-store','Set-Cookie':cookie('mizu_session','',{maxAge:0,secure:isSecure(request,env)})}});
   }
+  // アカウントの世代は全記録削除で増える。新しいクライアントはGETで取得する。
+  // 旧クライアントの書き込みは世代0とみなし、全削除後は必ず拒否する。
+  if(path==='/api/items/clear'&&request.method==='POST'){
+    const expected=epochRequest(request);
+    if(expected===null)return fail('世代情報が必要です',428);
+    const before=await accountEpoch(env.DB,user.id);
+    if(expected!==before)return staleEpoch(before);
+    const data=await bodyJson(request);
+    if(data.confirm!=='DELETE ALL')return fail('削除確認が不足しています');
+    // D1.batchは一括トランザクション。競合するときは更新を成立させず削除もしない。
+    const clearToken=crypto.randomUUID();
+    const out=await env.DB.batch([
+      env.DB.prepare('UPDATE account_epochs SET epoch=epoch+1,clear_token=? WHERE user_id=? AND epoch=?').bind(clearToken,user.id,expected),
+      env.DB.prepare('DELETE FROM items WHERE user_id=? AND EXISTS (SELECT 1 FROM account_epochs WHERE user_id=? AND epoch=? AND clear_token=?)').bind(user.id,user.id,expected+1,clearToken),
+    ]);
+    if(out[0].meta?.changes!==1)return staleEpoch(await accountEpoch(env.DB,user.id));
+    return ok({ok:true,epoch:expected+1});
+  }
   if(path==='/api/items'&&request.method==='GET'){
     const {results}=await env.DB.prepare('SELECT id,kind,content,status,due_date,created_at,updated_at FROM items WHERE user_id=? ORDER BY created_at DESC LIMIT 2000').bind(user.id).all();
-    return ok({items:results.map(mapRow)});
+    return ok({items:results.map(mapRow),epoch:await accountEpoch(env.DB,user.id)});
+  }
+  if(path.startsWith('/api/items')&&request.method!=='GET'){
+    const current=await accountEpoch(env.DB,user.id);
+    // 旧クライアントからの未指定は0世代として扱い、全削除後には復活させない。
+    const sent=epochRequest(request)??0;
+    if(sent!==current)return staleEpoch(current);
   }
   if(path==='/api/items'&&request.method==='POST'){
     const item=normalizeItem(await bodyJson(request));if(!item)return fail('記録内容が不正です');
-    const write=await env.DB.prepare('INSERT INTO items(id,user_id,kind,content,status,due_date,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(user_id,id) DO NOTHING')
-      .bind(item.id,user.id,item.kind,item.content,item.status,item.dueDate,item.createdAt,item.updatedAt).run();
-    if(!write.meta?.changes)return conflictResponse(await getItemRow(env.DB,user.id,item.id));
+    const write=await env.DB.prepare('INSERT INTO items(id,user_id,kind,content,status,due_date,created_at,updated_at) SELECT ?,?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM account_epochs WHERE user_id=? AND epoch=?) ON CONFLICT(user_id,id) DO NOTHING')
+      .bind(item.id,user.id,item.kind,item.content,item.status,item.dueDate,item.createdAt,item.updatedAt,user.id,epochRequest(request)??0).run();
+    if(!write.meta?.changes){const fresh=await accountEpoch(env.DB,user.id);if(fresh!==(epochRequest(request)??0))return staleEpoch(fresh);return conflictResponse(await getItemRow(env.DB,user.id,item.id));}
     return ok({item},201);
   }
   const match=path.match(/^\/api\/items\/([\w-]{10,80})$/);
@@ -164,16 +196,17 @@ async function route(request,env){
     const item=normalizeItem({...data,id:match[1]});if(!item)return fail('記録内容が不正です');
     const expected=data.expectedUpdatedAt;
     if(expected===null){
-      const write=await env.DB.prepare('INSERT INTO items(id,user_id,kind,content,status,due_date,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(user_id,id) DO NOTHING')
-        .bind(item.id,user.id,item.kind,item.content,item.status,item.dueDate,item.createdAt,item.updatedAt).run();
+      const write=await env.DB.prepare('INSERT INTO items(id,user_id,kind,content,status,due_date,created_at,updated_at) SELECT ?,?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM account_epochs WHERE user_id=? AND epoch=?) ON CONFLICT(user_id,id) DO NOTHING')
+        .bind(item.id,user.id,item.kind,item.content,item.status,item.dueDate,item.createdAt,item.updatedAt,user.id,epochRequest(request)??0).run();
       if(write.meta?.changes)return ok({item},201);
     }else{
       const updatedAt=nextRevision(expected);
-      const write=await env.DB.prepare('UPDATE items SET content=?,status=?,due_date=?,updated_at=? WHERE user_id=? AND id=? AND kind=? AND updated_at=?')
-        .bind(item.content,item.status,item.dueDate,updatedAt,user.id,item.id,item.kind,expected).run();
+      const write=await env.DB.prepare('UPDATE items SET content=?,status=?,due_date=?,updated_at=? WHERE user_id=? AND id=? AND kind=? AND updated_at=? AND EXISTS (SELECT 1 FROM account_epochs WHERE user_id=? AND epoch=?)')
+        .bind(item.content,item.status,item.dueDate,updatedAt,user.id,item.id,item.kind,expected,user.id,epochRequest(request)??0).run();
       if(write.meta?.changes)return ok({item:{...item,updatedAt}});
     }
     // DB保存は成功したのに通信応答が消えた場合も、同じ内容なら再送成功として扱える。
+    const fresh=await accountEpoch(env.DB,user.id);if(fresh!==(epochRequest(request)??0))return staleEpoch(fresh);
     const current=await getItemRow(env.DB,user.id,item.id);
     if(current&&sameItemData(mapRow(current),item))return ok({item:mapRow(current)});
     return conflictResponse(current);
@@ -187,9 +220,10 @@ async function route(request,env){
       const current=await getItemRow(env.DB,user.id,match[1]);
       return Response.json({error:'版情報のない古い削除要求を安全のため中止しました',reason:'legacy_delete',current:current?mapRow(current):null},{status:409,headers:{'Cache-Control':'no-store'}});
     }
-    const write=await env.DB.prepare('DELETE FROM items WHERE user_id=? AND id=? AND updated_at=?')
-      .bind(user.id,match[1],expected).run();
+    const write=await env.DB.prepare('DELETE FROM items WHERE user_id=? AND id=? AND updated_at=? AND EXISTS (SELECT 1 FROM account_epochs WHERE user_id=? AND epoch=?)')
+      .bind(user.id,match[1],expected,user.id,epochRequest(request)??0).run();
     if(write.meta?.changes)return ok({ok:true});
+    const fresh=await accountEpoch(env.DB,user.id);if(fresh!==(epochRequest(request)??0))return staleEpoch(fresh);
     const current=await getItemRow(env.DB,user.id,match[1]);
     if(!current)return ok({ok:true}); // すでに削除済みなら、再送による削除も成功とみなす。
     return conflictResponse(current);
@@ -203,9 +237,10 @@ async function route(request,env){
     const item=normalizeItem({...data,id:match[1],kind:current.kind,createdAt:current.created_at});
     if(!item)return fail('更新内容が不正です');
     const updatedAt=nextRevision(data.expectedUpdatedAt);
-    const write=await env.DB.prepare('UPDATE items SET content=?,status=?,due_date=?,updated_at=? WHERE user_id=? AND id=? AND updated_at=?')
-      .bind(item.content,item.status,item.dueDate,updatedAt,user.id,match[1],data.expectedUpdatedAt).run();
+    const write=await env.DB.prepare('UPDATE items SET content=?,status=?,due_date=?,updated_at=? WHERE user_id=? AND id=? AND updated_at=? AND EXISTS (SELECT 1 FROM account_epochs WHERE user_id=? AND epoch=?)')
+      .bind(item.content,item.status,item.dueDate,updatedAt,user.id,match[1],data.expectedUpdatedAt,user.id,epochRequest(request)??0).run();
     if(write.meta?.changes)return ok({item:{...item,updatedAt}});
+    const fresh=await accountEpoch(env.DB,user.id);if(fresh!==(epochRequest(request)??0))return staleEpoch(fresh);
     const newest=await getItemRow(env.DB,user.id,match[1]);
     if(newest&&sameItemData(mapRow(newest),item))return ok({item:mapRow(newest)});
     return conflictResponse(newest);
