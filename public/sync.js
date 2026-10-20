@@ -198,7 +198,7 @@ export class CloudSync {
    * 新しい世代を受け取ったら、キューとキャッシュを破棄して最新データに入れ替える。
    */
   invalidateEpoch(epoch,remoteItems=[],notify=true){
-    if(!Number.isSafeInteger(epoch)||epoch<0)return;
+    if(!Number.isSafeInteger(epoch)||epoch<this.epoch)return;
     this.epoch=epoch;this.ready=true;this.epochMismatch=true;this.queue=[];this.version++;
     this.storage.setItem(epochKey(this.userId),String(epoch));
     this.items=safeItems(remoteItems);this.persistQueue();this.persistItems();this.publish();
@@ -219,6 +219,8 @@ export class CloudSync {
       try {
         const response=await this.request('/items');
         if(!this.active||this.version!==atVersion)return;
+        // 古い通信応答で世代を巻き戻さない（全削除後の復活対策）。
+        if(Number.isSafeInteger(response.epoch)&&response.epoch<this.epoch)return;
         if(Number.isSafeInteger(response.epoch)&&response.epoch!==this.epoch){
           this.invalidateEpoch(response.epoch,response.items||[]);
           this.epochMismatch=false;return;
