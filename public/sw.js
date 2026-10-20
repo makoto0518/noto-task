@@ -3,7 +3,7 @@
  * This separation avoids accidentally replaying stale Google/session data.
  * Bump CACHE whenever changing essential static assets.
  */
-const CACHE='noto-static-v8';
+const CACHE='noto-static-v9';
 const SHELL=['/','/index.html','/style.css','/app.js','/logic.js','/sync.js','/quota.js','/theme.js','/icon.svg','/manifest.webmanifest'];
 self.addEventListener('install',event=>event.waitUntil(caches.open(CACHE).then(cache=>cache.addAll(SHELL)).then(()=>self.skipWaiting())));
 self.addEventListener('activate',event=>event.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(key=>key!==CACHE).map(key=>caches.delete(key)))).then(()=>self.clients.claim())));
