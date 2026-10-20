@@ -67,7 +67,18 @@ export class CloudSync {
     return this.items.find(item=>item.id===id)?.updatedAt??null;
   }
   recordPut(item, localItems) { this.record({type:'put',id:item.id,item,expectedUpdatedAt:this.expectedRevision(item.id)},localItems); }
-  recordDelete(id, localItems) { this.record({type:'delete',id,expectedUpdatedAt:this.expectedRevision(id)},localItems); }
+  recordDelete(id, localItems) {
+    if(this.expectedRevision(id)===null){
+      // An unsent creation can be cancelled locally; no remote DELETE needed.
+      this.queue=this.queue.filter(entry=>entry.id!==id);
+      this.version++;
+      this.items=safeItems(localItems);
+      this.persistQueue();this.persistItems();this.publish();
+      this.status(this.queue.length?'pending':'synced');
+      return;
+    }
+    this.record({type:'delete',id,expectedUpdatedAt:this.expectedRevision(id)},localItems);
+  }
   record(op,localItems) {
     if(!this.active||!this.userId)return;
     this.queue=compactQueue(this.queue,op);this.version++;
