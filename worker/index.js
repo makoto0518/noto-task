@@ -83,7 +83,8 @@ async function handleAI(request,env,user){
   const usage=await env.DB.prepare('INSERT INTO ai_usage(user_id,day,calls) VALUES(?,?,1) ON CONFLICT(user_id,day) DO UPDATE SET calls=calls+1 WHERE calls<20').bind(user.id,day).run();
   if(!usage.meta?.changes)return fail('AIの1日あたりの利用上限に達しました',429);
   const result=await env.AI.run(TASK_MODEL,{
-    messages:TASK_MESSAGES(data.text),max_tokens:380,temperature:0
+    messages:TASK_MESSAGES(data.text),max_tokens:380,temperature:0,
+    chat_template_kwargs:{enable_thinking:false}
   });
   const tasks=groundedTaskSuggestions(result,data.text);
   return ok({tasks});
