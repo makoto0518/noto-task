@@ -33,6 +33,12 @@ function normalizeItem(data,{patch=false}={}){
   return {id:data.id,kind:data.kind,content:data.content.trim(),status:data.kind==='note'?'todo':statusValues.has(data.status)?data.status:'todo',dueDate,createdAt,updatedAt:new Date().toISOString()};
 }
 function mapRow(row){return {id:row.id,kind:row.kind,content:row.content,status:row.status,dueDate:row.due_date,createdAt:row.created_at,updatedAt:row.updated_at};}
+/** Conditional writes detect stale edits without requiring a D1 schema change. */
+function validExpectedRevision(value){return value===null||(typeof value==='string'&&value.length<=64&&!Number.isNaN(Date.parse(value)));}
+function nextRevision(previous){const old=Date.parse(previous);return new Date(Math.max(Date.now(),Number.isFinite(old)?old+1:0)).toISOString();}
+async function getItemRow(db,userId,id){return db.prepare('SELECT id,kind,content,status,due_date,created_at,updated_at FROM items WHERE user_id=? AND id=?').bind(userId,id).first();}
+function sameItemData(a,b){return a.kind===b.kind&&a.content===b.content&&a.status===b.status&&a.dueDate===b.dueDate;}
+function conflictResponse(row){return Response.json({error:'別の端末で更新されています',current:row?mapRow(row):null},{status:409,headers:{'Cache-Control':'no-store'}});}
 /** OAuth redirect: random state prevents CSRF, PKCE challenge binds the callback. */
 async function beginGoogle(request,env){
   if(!env.GOOGLE_CLIENT_ID||!env.GOOGLE_CLIENT_SECRET)return fail('Google OAuthの設定が必要です',503);
@@ -119,27 +125,58 @@ async function route(request,env){
   }
   if(path==='/api/items'&&request.method==='POST'){
     const item=normalizeItem(await bodyJson(request));if(!item)return fail('記録内容が不正です');
-    await env.DB.prepare('INSERT INTO items(id,user_id,kind,content,status,due_date,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(user_id,id) DO NOTHING').bind(item.id,user.id,item.kind,item.content,item.status,item.dueDate,item.createdAt,item.updatedAt).run();
+    const write=await env.DB.prepare('INSERT INTO items(id,user_id,kind,content,status,due_date,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(user_id,id) DO NOTHING')
+      .bind(item.id,user.id,item.kind,item.content,item.status,item.dueDate,item.createdAt,item.updatedAt).run();
+    if(!write.meta?.changes)return conflictResponse(await getItemRow(env.DB,user.id,item.id));
     return ok({item},201);
   }
   const match=path.match(/^\/api\/items\/([\w-]{10,80})$/);
-  // Idempotent upsert: retrying an offline write cannot duplicate its item ID.
+  // No schema migration: use the existing updated_at column for atomic compare-and-swap.
   if(match&&request.method==='PUT'){
-    const item=normalizeItem({...await bodyJson(request),id:match[1]});
-    if(!item)return fail('記録内容が不正です');
-    await env.DB.prepare('INSERT INTO items(id,user_id,kind,content,status,due_date,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(user_id,id) DO UPDATE SET content=excluded.content,status=excluded.status,due_date=excluded.due_date,updated_at=excluded.updated_at WHERE items.kind=excluded.kind').bind(item.id,user.id,item.kind,item.content,item.status,item.dueDate,item.createdAt,item.updatedAt).run();
-    return ok({item});
-  }
-  // Deletes are also idempotent, so failed responses can be retried safely.
-  if(match&&(request.method==='PATCH'||request.method==='DELETE')){
-    const id=match[1];const current=await env.DB.prepare('SELECT * FROM items WHERE user_id=? AND id=?').bind(user.id,id).first();
-    if(!current&&request.method==='DELETE')return ok({ok:true});
-    if(!current)return fail('記録が見つかりません',404);
-    if(request.method==='DELETE'){
-      await env.DB.prepare('DELETE FROM items WHERE user_id=? AND id=?').bind(user.id,id).run();return ok({ok:true});
+    const data=await bodyJson(request);
+    if(!Object.hasOwn(data,'expectedUpdatedAt')||!validExpectedRevision(data.expectedUpdatedAt))return fail('更新前の版情報が必要です',428);
+    const item=normalizeItem({...data,id:match[1]});if(!item)return fail('記録内容が不正です');
+    const expected=data.expectedUpdatedAt;
+    if(expected===null){
+      const write=await env.DB.prepare('INSERT INTO items(id,user_id,kind,content,status,due_date,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(user_id,id) DO NOTHING')
+        .bind(item.id,user.id,item.kind,item.content,item.status,item.dueDate,item.createdAt,item.updatedAt).run();
+      if(write.meta?.changes)return ok({item},201);
+    }else{
+      const updatedAt=nextRevision(expected);
+      const write=await env.DB.prepare('UPDATE items SET content=?,status=?,due_date=?,updated_at=? WHERE user_id=? AND id=? AND kind=? AND updated_at=?')
+        .bind(item.content,item.status,item.dueDate,updatedAt,user.id,item.id,item.kind,expected).run();
+      if(write.meta?.changes)return ok({item:{...item,updatedAt}});
     }
-    const data=await bodyJson(request);const item=normalizeItem({...data,id,kind:current.kind,createdAt:current.created_at});if(!item)return fail('更新内容が不正です');
-    await env.DB.prepare('UPDATE items SET content=?,status=?,due_date=?,updated_at=? WHERE user_id=? AND id=?').bind(item.content,item.status,item.dueDate,item.updatedAt,user.id,id).run();return ok({item});
+    // A lost response after a successful write can be safely acknowledged.
+    const current=await getItemRow(env.DB,user.id,item.id);
+    if(current&&sameItemData(mapRow(current),item))return ok({item:mapRow(current)});
+    return conflictResponse(current);
+  }
+  if(match&&request.method==='DELETE'){
+    const expected=request.headers.get('If-Match');
+    if(typeof expected!=='string'||!validExpectedRevision(expected))return fail('削除前の版情報が必要です',428);
+    const write=await env.DB.prepare('DELETE FROM items WHERE user_id=? AND id=? AND updated_at=?')
+      .bind(user.id,match[1],expected).run();
+    if(write.meta?.changes)return ok({ok:true});
+    const current=await getItemRow(env.DB,user.id,match[1]);
+    if(!current)return ok({ok:true}); // Retry after a committed delete.
+    return conflictResponse(current);
+  }
+  // Older PATCH clients must also send a revision precondition, not bypass protection.
+  if(match&&request.method==='PATCH'){
+    const data=await bodyJson(request);
+    if(!Object.hasOwn(data,'expectedUpdatedAt')||!validExpectedRevision(data.expectedUpdatedAt)||data.expectedUpdatedAt===null)return fail('更新前の版情報が必要です',428);
+    const current=await getItemRow(env.DB,user.id,match[1]);
+    if(!current)return conflictResponse(null);
+    const item=normalizeItem({...data,id:match[1],kind:current.kind,createdAt:current.created_at});
+    if(!item)return fail('更新内容が不正です');
+    const updatedAt=nextRevision(data.expectedUpdatedAt);
+    const write=await env.DB.prepare('UPDATE items SET content=?,status=?,due_date=?,updated_at=? WHERE user_id=? AND id=? AND updated_at=?')
+      .bind(item.content,item.status,item.dueDate,updatedAt,user.id,match[1],data.expectedUpdatedAt).run();
+    if(write.meta?.changes)return ok({item:{...item,updatedAt}});
+    const newest=await getItemRow(env.DB,user.id,match[1]);
+    if(newest&&sameItemData(mapRow(newest),item))return ok({item:mapRow(newest)});
+    return conflictResponse(newest);
   }
   if(path==='/api/ai/tasks'&&request.method==='POST')return handleAI(request,env,user);
   return fail('APIが見つかりません',404);
